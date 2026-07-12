@@ -1,5 +1,13 @@
 # Incremental Reading changelog
 
+## 1.0.1 — 2026-07-12
+
+### Fixed
+- Changed the technical plugin ID to `incremental-reading-toolkit` because `incremental-reading` was
+  already reserved in the Obsidian Community Plugins submission portal.
+- Internal command dispatch now derives the command prefix from the manifest instead of hard-coding
+  the plugin ID.
+
 ## 1.0.0 — 2026-07-12
 
 ### Changed

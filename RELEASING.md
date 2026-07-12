@@ -5,7 +5,7 @@
 1. Confirm `manifest.json`, `package.json`, and `versions.json` contain the same release version.
 2. Update `CHANGELOG.md` and verify `minAppVersion` is accurate.
 3. Run `npm ci` and `npm run check`.
-4. Test the release files in a dedicated Obsidian development vault using the folder `.obsidian/plugins/incremental-reading/`.
+4. Test the release files in a dedicated Obsidian development vault using the folder `.obsidian/plugins/incremental-reading-toolkit/`.
 5. Confirm Spaced Repetition card creation, review delegation, legacy migration, and topic scheduling manually.
 
 ## Create the release
@@ -13,8 +13,8 @@
 Create and push an annotated tag that exactly matches the version in `manifest.json`:
 
 ```bash
-git tag -a 1.0.0 -m "1.0.0"
-git push origin 1.0.0
+git tag -a 1.0.1 -m "1.0.1"
+git push origin 1.0.1
 ```
 
 The release workflow verifies the repository and creates a draft GitHub release containing `main.js`, `manifest.json`, and `styles.css`. Review its generated notes, then publish it.

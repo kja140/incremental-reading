@@ -40,7 +40,7 @@ Card creation writes Spaced Repetition-compatible Markdown. Card review commands
 ### Manual
 
 1. Download `main.js`, `manifest.json`, and `styles.css` from the latest [release](https://github.com/kja140/incremental-reading/releases).
-2. Copy them into `<vault>/.obsidian/plugins/incremental-reading/`.
+2. Copy them into `<vault>/.obsidian/plugins/incremental-reading-toolkit/`.
 3. Install and enable **Spaced Repetition**, then reload Obsidian and enable Incremental Reading.
 
 ## Getting started

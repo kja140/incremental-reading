@@ -1184,7 +1184,7 @@ class IRQueueView extends ItemView {
     }
     const leaf = this.plugin.app.workspace.getLeaf(false);
     await leaf.openFile(r.file);
-    this.plugin.app.commands.executeCommandById('incremental-reading:jump-to-read-point');
+    this.plugin.app.commands.executeCommandById(`${this.plugin.manifest.id}:jump-to-read-point`);
   }
 
   _renderTimeline(root) {
@@ -1540,7 +1540,7 @@ class KnowledgeTreeView extends ItemView {
     const leaf = this.plugin.app.workspace.getLeaf(false);
     await leaf.openFile(page.tfile);
     if (page.fm.type === 'source' || page.fm.type === 'extract') {
-      this.plugin.app.commands.executeCommandById('incremental-reading:jump-to-read-point');
+      this.plugin.app.commands.executeCommandById(`${this.plugin.manifest.id}:jump-to-read-point`);
     }
   }
 
