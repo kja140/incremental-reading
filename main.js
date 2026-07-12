@@ -206,8 +206,27 @@ function hasProgressAdvanced({
     || Number(nextSeconds) > Number(previousSeconds)
     || Number(nextLine) > Number(previousLine);
 }
+
+// Merge independently ranked topics and cards without allowing one type to
+// monopolise the session. This mirrors SuperMemo's mixed topic/item stream
+// while leaving each scheduler responsible for ranking its own material.
+function interleaveLearningItems(items, score = () => 0) {
+  const ranked = items.slice().sort((a, b) => score(b) - score(a));
+  const topics = ranked.filter(item => item.fm?.type !== 'card');
+  const cards = ranked.filter(item => item.fm?.type === 'card');
+  if (!topics.length || !cards.length) return ranked;
+  const out = [];
+  let next = score(cards[0]) > score(topics[0]) ? 'card' : 'topic';
+  while (topics.length || cards.length) {
+    const primary = next === 'card' ? cards : topics;
+    const fallback = next === 'card' ? topics : cards;
+    out.push((primary.length ? primary : fallback).shift());
+    next = next === 'card' ? 'topic' : 'card';
+  }
+  return out;
+}
 // <<< topic-core-functions
-  return { progressAwareAFactor, hasProgressAdvanced };
+  return { progressAwareAFactor, hasProgressAdvanced, interleaveLearningItems };
 })();
 
 // ============================================================================
@@ -222,6 +241,8 @@ const ATTACHMENTS_FOLDER = `${ROOT}/Attachments`;
 const CATEGORIES_FOLDER = `${ROOT}/Categories`;
 const KNOWLEDGE_TREE_VIEW_TYPE = 'ir-tree-view';
 const KNOWLEDGE_TREE_SIDEBAR_TYPE = 'ir-tree-sidebar';
+const MAIN_DASHBOARD_VIEW_TYPE = 'ir-main-dashboard';
+const PDF_VIEW_TYPE = 'ir-pdf-viewer';
 const REVIEW_LOG_PATH = `${ROOT}/Review Log.md`;
 const DASHBOARD_PATH = `${ROOT}/Incremental-Reading-Dashboard.md`;
 const SPACED_REPETITION_PLUGIN_ID = 'obsidian-spaced-repetition';
@@ -259,6 +280,7 @@ const DEFAULT_SETTINGS = {
     sidebar_enabled: true,
     default_tag_filter: '',
     sort_key: 'urgency',
+    mix_cards: true,
   },
   inline_cards: {
     enabled: true,
@@ -278,7 +300,6 @@ const DEFAULT_SETTINGS = {
     categories: 'Sources/Incremental Reading/Categories',
     dashboard: 'Sources/Incremental Reading/Incremental-Reading-Dashboard.md',
     review_log: 'Sources/Incremental Reading/Review Log.md',
-    sioyek: '/Applications/sioyek.app/Contents/MacOS/sioyek',
   },
   misc: {
     debug: false,
@@ -287,6 +308,7 @@ const DEFAULT_SETTINGS = {
   tree: {
     expanded: [],
     child_warn_threshold: 100,
+    show_completed: false,
   },
 };
 
@@ -978,9 +1000,9 @@ async function resolveSourceFromActive(app, settings) {
   if (!absPath) { new Notice('Cannot resolve filesystem path.'); return null; }
 
   // Match by:
-  //   1. exact filesystem path equality (Sioyek case — sioyek_path is absolute)
+  //   1. exact filesystem path equality for an external PDF
   //   2. suffix match for vault PDFs (PDF++ case — active.path is vault-relative,
-  //      sioyek_path may store the same vault-absolute path or vault-relative)
+  //      pdf_path may store the same vault-absolute path or vault-relative)
   //   3. explicit pdf_vault_path field (preferred for PDF++-only sources)
   const vaultRel = active.path;
   const candidates = [];
@@ -988,17 +1010,17 @@ async function resolveSourceFromActive(app, settings) {
     if (f.extension !== 'md') continue;
     const fm = getFm(app, f);
     if (fm?.type !== 'source') continue;
-    const sioyek = fm.sioyek_path;
+    const pdfPath = fm.pdf_path || fm.sioyek_path;
     const pdfVault = fm.pdf_vault_path;
     if (
-      (sioyek && (sioyek === absPath || sioyek === vaultRel || (typeof sioyek === 'string' && sioyek.endsWith('/' + vaultRel)))) ||
+      (pdfPath && (pdfPath === absPath || pdfPath === vaultRel || (typeof pdfPath === 'string' && pdfPath.endsWith('/' + vaultRel)))) ||
       (pdfVault && pdfVault === vaultRel)
     ) {
       candidates.push({ tfile: f, fm });
     }
   }
   if (candidates.length === 0) {
-    new Notice('No source note links to this PDF via sioyek_path.');
+    new Notice('No source note links to this PDF via pdf_path or pdf_vault_path.');
     return null;
   }
   if (candidates.length === 1) return candidates[0];
@@ -1494,6 +1516,9 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
       d.addOption('urgency', 'Urgency').addOption('priority', 'Priority').addOption('due_date', 'Due date')
        .setValue(s.sort_key).onChange(v => { s.sort_key = v; save(); });
     });
+    new Setting(sec).setName('Mix cards with topics')
+      .setDesc('Alternate card notes with reading topics in the daily learning stream. Spaced Repetition still grades and schedules the cards.')
+      .addToggle(t => t.setValue(s.mix_cards !== false).onChange(v => { s.mix_cards = v; save(); }));
   }
 
   _inlineCards(root) {
@@ -1556,6 +1581,11 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
       'child_warn_threshold',
       { min: 1, max: 100000, step: 1 },
     );
+    new Setting(sec).setName('Show completed material')
+      .setDesc('Include done and dismissed topics in the knowledge tree.')
+      .addToggle(t => t.setValue(this.plugin.settings.tree.show_completed).onChange(v => {
+        this.plugin.settings.tree.show_completed = v; this.plugin.saveSettings(); this.plugin._refreshTreeViews();
+      }));
   }
 
   _paths(root) {
@@ -1571,7 +1601,6 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
       ['categories', 'Categories folder', 'Knowledge-tree category notes.'],
       ['dashboard', 'Dashboard note', 'Optional session snapshot and dashboard note path.'],
       ['review_log', 'Review log', 'Markdown table containing completed topic reviews.'],
-      ['sioyek', 'Sioyek executable', 'Absolute executable path used only by Open in Sioyek.'],
     ];
     for (const [key, name, description] of paths) {
       new Setting(sec).setName(name).setDesc(description)
@@ -1625,12 +1654,121 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
 
 const TREE_ICONS = { category: '📁', source: '📖', extract: '✂️', card: '🃏' };
 
+class MainDashboardView extends ItemView {
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.timer = null; }
+  getViewType() { return MAIN_DASHBOARD_VIEW_TYPE; }
+  getDisplayText() { return 'Learning dashboard'; }
+  getIcon() { return 'layout-dashboard'; }
+  async onOpen() {
+    this.render();
+    this.registerEvent(this.plugin.app.metadataCache.on('changed', () => {
+      if (this.timer) window.clearTimeout(this.timer);
+      this.timer = window.setTimeout(() => this.render(), 250);
+    }));
+  }
+  async onClose() { if (this.timer) window.clearTimeout(this.timer); }
+  _metric(parent, value, label, tone = '') {
+    const card = parent.createDiv({ cls: `ir-dashboard-metric ${tone}`.trim() });
+    card.createDiv({ cls: 'ir-dashboard-metric-value', text: String(value) });
+    card.createDiv({ cls: 'ir-dashboard-metric-label', text: label });
+  }
+  render() {
+    const root = this.containerEl.children[1];
+    root.empty(); root.addClass('ir-dashboard-root');
+    const files = getAllIRFiles(this.plugin.app, this.plugin.settings);
+    const today = todayDate();
+    const rows = files.map(tfile => ({ tfile, fm: getFm(this.plugin.app, tfile) })).filter(row => row.fm);
+    const topics = rows.filter(row => ['source', 'extract'].includes(row.fm.type));
+    const active = topics.filter(row => isActiveIR(row.fm));
+    const cards = rows.filter(row => row.fm.type === 'card');
+    const due = active.filter(row => isDue(row.fm, today, this.plugin.settings));
+    const overdue = active.filter(row => isPastDue(row.fm, today, this.plugin.settings));
+    const reviewed = topics.filter(row => row.fm.last_reviewed === todayDateString(this.plugin.settings));
+
+    const head = root.createDiv({ cls: 'ir-dashboard-head' });
+    const title = head.createDiv();
+    title.createEl('h1', { text: 'Incremental learning' });
+    title.createEl('p', { text: `${today.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} · mixed topics and cards` });
+    const actions = head.createDiv({ cls: 'ir-dashboard-actions' });
+    for (const [label, action, cta] of [
+      ['Start mixed session', () => this.plugin.nextElement(), true],
+      ['Review cards', () => this.plugin.reviewCards(), false],
+      ['Knowledge tree', () => this.plugin._activateKnowledgeTree(), false],
+    ]) {
+      const button = actions.createEl('button', { text: label });
+      if (cta) button.addClass('mod-cta');
+      button.onclick = action;
+    }
+    const metrics = root.createDiv({ cls: 'ir-dashboard-metrics' });
+    this._metric(metrics, due.length, 'Due topics', due.length ? 'is-warning' : '');
+    this._metric(metrics, overdue.length, 'Overdue', overdue.length ? 'is-danger' : '');
+    this._metric(metrics, reviewed.length, 'Reviewed today', 'is-success');
+    this._metric(metrics, cards.length, 'Card notes');
+    this._metric(metrics, active.length, 'Active topics');
+
+    const grid = root.createDiv({ cls: 'ir-dashboard-grid' });
+    const sessionPanel = grid.createDiv({ cls: 'ir-dashboard-panel' });
+    sessionPanel.createEl('h2', { text: 'Next mixed session' });
+    const session = this.plugin.readSessionSnapshot()
+      || this.plugin.buildInterleavedQueue(this.plugin.buildDuePool({ skipCurrent: false }), today);
+    if (!session.length) sessionPanel.createEl('p', { text: 'Nothing due — you are caught up.' });
+    for (const row of session.slice(0, 12)) {
+      const item = sessionPanel.createDiv({ cls: 'ir-dashboard-session-row' });
+      item.createSpan({ text: TREE_ICONS[row.fm.type] || '•' });
+      item.createSpan({ cls: 'ir-dashboard-session-title', text: row.tfile.basename });
+      item.createSpan({ cls: 'ir-dashboard-session-kind', text: row.fm.type });
+      item.onclick = () => this.plugin.openLearningItem(row);
+    }
+    const health = grid.createDiv({ cls: 'ir-dashboard-panel' });
+    health.createEl('h2', { text: 'Collection health' });
+    const statusCounts = new Map();
+    for (const row of topics) statusCounts.set(row.fm.status || 'active', (statusCounts.get(row.fm.status || 'active') || 0) + 1);
+    for (const [status, count] of [...statusCounts.entries()].sort((a, b) => b[1] - a[1])) {
+      const line = health.createDiv({ cls: 'ir-dashboard-health-row' });
+      line.createSpan({ text: status }); line.createSpan({ text: String(count) });
+    }
+    health.createEl('p', { cls: 'ir-dashboard-note', text: 'Topic intervals use progress-aware A-Factors. Card due dates and grades remain owned by Spaced Repetition.' });
+  }
+}
+
+class PdfViewerView extends ItemView {
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.state = {}; }
+  getViewType() { return PDF_VIEW_TYPE; }
+  getDisplayText() { return this.state.title ? `PDF: ${this.state.title}` : 'PDF reader'; }
+  getIcon() { return 'file-text'; }
+  async setState(state) { this.state = { ...state }; this.render(); }
+  getState() { return this.state; }
+  async onOpen() { this.render(); }
+  render() {
+    const root = this.containerEl.children[1]; root.empty(); root.addClass('ir-pdf-root');
+    if (!this.state.url) { root.createEl('p', { text: 'Open a PDF source to begin.' }); return; }
+    const bar = root.createDiv({ cls: 'ir-pdf-toolbar' });
+    bar.createSpan({ cls: 'ir-pdf-title', text: this.state.title || 'PDF' });
+    bar.createSpan({ text: 'Page' });
+    const page = bar.createEl('input', { type: 'number', cls: 'ir-pdf-page' });
+    page.min = '1'; page.value = String(this.state.page || 1);
+    const frame = root.createEl('iframe', { cls: 'ir-pdf-frame', attr: { title: this.state.title || 'PDF viewer' } });
+    const load = () => { this.state.page = Math.max(1, Number(page.value) || 1); frame.src = `${this.state.url}#page=${this.state.page}&view=FitH`; };
+    page.onchange = load;
+    const save = bar.createEl('button', { text: 'Save read point' });
+    save.onclick = async () => {
+      if (this.state.sourcePath) {
+        const source = this.plugin.app.vault.getAbstractFileByPath(this.state.sourcePath);
+        if (source) await this.plugin.app.fileManager.processFrontMatter(source, fm => { fm.read_point = Math.max(1, Number(page.value) || 1); });
+      }
+      new Notice(`PDF read point saved at page ${Math.max(1, Number(page.value) || 1)}`);
+    };
+    load();
+  }
+}
+
 class KnowledgeTreeView extends ItemView {
   constructor(leaf, plugin, mode) {
     super(leaf);
     this.plugin = plugin;
     this.mode = mode || 'main';
     this.filter = '';
+    this.typeFilter = 'all';
     this._match = null;
     this.index = null;
     this.refreshTimer = null;
@@ -1673,6 +1811,12 @@ class KnowledgeTreeView extends ItemView {
     const fi = bar.createEl('input', { cls: 'ir-tree-filter', type: 'text', placeholder: 'Filter by title or tag…' });
     fi.value = this.filter;
     fi.oninput = (e) => { this.filter = e.target.value; this._renderBody(); };
+    if (this.mode === 'main') {
+      const type = bar.createEl('select', { cls: 'ir-tree-type-filter' });
+      for (const [value, label] of [['all', 'All types'], ['category', 'Categories'], ['source', 'Sources'], ['extract', 'Extracts'], ['card', 'Cards']]) type.createEl('option', { value, text: label });
+      type.value = this.typeFilter;
+      type.onchange = () => { this.typeFilter = type.value; this._renderBody(); };
+    }
 
     this._bodyEl = root.createDiv({ cls: 'ir-tree-body' });
     if (this.mode === 'main') {
@@ -1689,6 +1833,7 @@ class KnowledgeTreeView extends ItemView {
     if (!this._bodyEl) { this._render(); return; }
     this._bodyEl.empty();
     this.index = this.plugin.buildTreeIndex();
+    if (this.mode === 'main') this._renderSummary();
     this._computeFilter();
     const catRoots = this.index.roots.filter(p => p.fm.type === 'category' && !treeCore.effectiveParent(p.fm));
     const loose = this.index.roots.filter(p => !(p.fm.type === 'category' && !treeCore.effectiveParent(p.fm)));
@@ -1698,9 +1843,12 @@ class KnowledgeTreeView extends ItemView {
 
   _computeFilter() {
     const f = this.filter.trim().toLowerCase();
-    if (!f) { this._match = null; return; }
+    const constrained = !!f || this.typeFilter !== 'all' || !this.plugin.settings.tree.show_completed;
+    if (!constrained) { this._match = null; return; }
     const matches = (p) => {
-      if (p.basename.toLowerCase().includes(f)) return true;
+      if (this.typeFilter !== 'all' && p.fm.type !== this.typeFilter) return false;
+      if (!this.plugin.settings.tree.show_completed && ['done', 'dismissed'].includes(p.fm.status)) return false;
+      if (!f || p.basename.toLowerCase().includes(f)) return true;
       const tags = p.fm && p.fm.tags;
       const tagStr = Array.isArray(tags) ? tags.join(' ') : String(tags || '');
       return tagStr.toLowerCase().includes(f);
@@ -1721,6 +1869,16 @@ class KnowledgeTreeView extends ItemView {
       }
     }
     this._match = { keep };
+  }
+
+  _renderSummary() {
+    let summary = this._bodyEl.previousElementSibling;
+    if (!summary || !summary.hasClass?.('ir-tree-summary')) summary = this._bodyEl.parentElement.createDiv({ cls: 'ir-tree-summary' });
+    this._bodyEl.parentElement.insertBefore(summary, this._bodyEl);
+    summary.empty();
+    const counts = { category: 0, source: 0, extract: 0, card: 0 };
+    for (const page of this.index.pages) counts[page.fm.type] = (counts[page.fm.type] || 0) + 1;
+    for (const [type, label] of [['category', 'categories'], ['source', 'sources'], ['extract', 'extracts'], ['card', 'cards']]) summary.createSpan({ text: `${TREE_ICONS[type]} ${counts[type]} ${label}` });
   }
 
   _renderNode(parentEl, page, depth) {
@@ -1756,6 +1914,8 @@ class KnowledgeTreeView extends ItemView {
         const cc = row.createSpan({ cls: 'ir-tree-count', text: String(children.length) });
         if (children.length > this.plugin.settings.tree.child_warn_threshold) cc.addClass('ir-tree-count-warn');
       }
+      const status = row.createSpan({ cls: `ir-tree-status is-${page.fm.status || 'active'}`, text: page.fm.status || 'active' });
+      status.title = page.fm.next_review ? `Next review: ${page.fm.next_review}` : 'No review date';
       this._attachDrag(row, page);
       this._attachActions(row, page);
     }
@@ -1845,6 +2005,8 @@ class IncrementalReadingPlugin extends Plugin {
     this.registerView(IR_QUEUE_VIEW_TYPE, leaf => new IRQueueView(leaf, this));
     this.registerView(KNOWLEDGE_TREE_VIEW_TYPE, leaf => new KnowledgeTreeView(leaf, this, 'main'));
     this.registerView(KNOWLEDGE_TREE_SIDEBAR_TYPE, leaf => new KnowledgeTreeView(leaf, this, 'sidebar'));
+    this.registerView(MAIN_DASHBOARD_VIEW_TYPE, leaf => new MainDashboardView(leaf, this));
+    this.registerView(PDF_VIEW_TYPE, leaf => new PdfViewerView(leaf, this));
     const cmd = (id, name, callback) => this.addCommand({ id, name, callback });
 
     // ---- Visual learning code-block renderer ----
@@ -1941,8 +2103,7 @@ class IncrementalReadingPlugin extends Plugin {
     cmd('open-dashboard',     'Open dashboard',                  () => this.openDashboard());
     cmd('open-user-guide',    'Open user guide',                 () => this.openUserGuide());
     cmd('open-parent',        'Open parent',                     () => this.openParent());
-    cmd('open-pdf',           'Open PDF (Obsidian viewer)',      () => this.openPdf());
-    cmd('open-sioyek',        'Open in Sioyek',                  () => this.openSioyek());
+    cmd('open-pdf',           'Open PDF (Toolkit viewer)',       () => this.openPdf());
     cmd('toggle-read-point',  'Toggle read-point',               () => this.toggleReadPoint());
     cmd('jump-to-read-point', 'Jump to read-point',              () => this.jumpToReadPoint());
     cmd('stats',              'Stats',                           () => this.stats());
@@ -2143,7 +2304,6 @@ class IncrementalReadingPlugin extends Plugin {
     if (this._spacedRepetitionSettings().multilineCardSeparator === this._spacedRepetitionSettings().multilineReversedCardSeparator) {
       issues.push('Basic and bidirectional card separators must differ.');
     }
-    if (!String(this.settings.paths.sioyek || '').trim()) notes.push('Sioyek is not configured; external PDF/EPUB opening will be unavailable.');
     if (issues.length) {
       new Notice(`Setup needs attention:\n- ${issues.join('\n- ')}`, 12000);
       return false;
@@ -2210,8 +2370,10 @@ class IncrementalReadingPlugin extends Plugin {
     for (const f of getAllIRFiles(this.app, this.settings)) {
       if (skipCurrent && active && f.path === active.path) continue;
       const fm = getFm(this.app, f);
-      if (!isActiveIR(fm) || fm.type === 'card') continue;
-      if (!isDue(fm, today, this.settings)) continue;
+      if (!isActiveIR(fm)) continue;
+      if (fm.type === 'card') {
+        if (this.settings.queue.mix_cards === false || !this.isSpacedRepetitionReady()) continue;
+      } else if (!isDue(fm, today, this.settings)) continue;
       out.push({ tfile: f, fm });
     }
     return out;
@@ -2234,13 +2396,12 @@ class IncrementalReadingPlugin extends Plugin {
     for (const p of paths) {
       if (seen.has(p)) continue;   // drop duplicate snapshot keys
       seen.add(p);
-      if (typeof p === 'string' && p.includes('::card::')) continue;
       const tf = this.app.vault.getAbstractFileByPath(p);
       if (!tf) continue;
       const f = getFm(this.app, tf);
       if (!isActiveIR(f)) continue;
       if (f.last_reviewed === todayStr) continue;
-      if (!isDue(f, today, this.settings)) continue;
+      if (f.type !== 'card' && !isDue(f, today, this.settings)) continue;
       out.push({ tfile: tf, fm: f });
     }
     return out;
@@ -2262,7 +2423,29 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   buildInterleavedQueue(pool, today) {
-    return pool.slice().sort((a, b) => urgency(b.fm, today, this.settings) - urgency(a.fm, today, this.settings));
+    if (this.settings.queue.mix_cards === false) {
+      return pool.filter(item => item.fm.type !== 'card').sort((a, b) => urgency(b.fm, today, this.settings) - urgency(a.fm, today, this.settings));
+    }
+    return topicCore.interleaveLearningItems(pool, item => urgency(item.fm, today, this.settings));
+  }
+
+  async consumeSessionItem(path) {
+    const dash = this.app.vault.getAbstractFileByPath(this.dashboardPath());
+    if (!dash) return;
+    await this.app.fileManager.processFrontMatter(dash, fm => {
+      if (Array.isArray(fm.today_session_paths)) fm.today_session_paths = fm.today_session_paths.filter(value => value !== path);
+    });
+  }
+
+  async openLearningItem(item) {
+    if (!item?.tfile) return;
+    await this.app.workspace.getLeaf(false).openFile(item.tfile);
+    if (item.fm.type === 'card') {
+      await this.consumeSessionItem(item.tfile.path);
+      this.reviewCardsInNote();
+    } else {
+      this.app.commands.executeCommandById(`${this.manifest.id}:jump-to-read-point`);
+    }
   }
 
   async nextElement() {
@@ -2280,8 +2463,8 @@ class IncrementalReadingPlugin extends Plugin {
     if (!queue || queue.length === 0) { new Notice('✨ Caught up.'); return; }
 
     const next = queue[0];
-    await this.app.workspace.getLeaf(false).openFile(next.tfile);
-    const action = next.fm.type === 'source' ? '📖 Read' : '📝 Process';
+    await this.openLearningItem(next);
+    const action = next.fm.type === 'card' ? '🃏 Review' : (next.fm.type === 'source' ? '📖 Read' : '📝 Process');
     new Notice(`${action}: ${next.tfile.basename} · p${next.fm.priority ?? '—'} · ${queue.length - 1} more in queue`);
   }
 
@@ -2345,7 +2528,7 @@ class IncrementalReadingPlugin extends Plugin {
       if (parsed != null) newReadPointSeconds = parsed;
     }
 
-    const isMarkdownSource = fm.type === 'source' && !fm.total_pages && !fm.sioyek_path;
+    const isMarkdownSource = fm.type === 'source' && !fm.total_pages && !fm.pdf_path && !fm.pdf_vault_path && !fm.sioyek_path;
     if (isMarkdownSource) {
       const currentContent = await this.app.vault.cachedRead(file);
       if (!previousReadPointLine) previousReadPointLine = markerLineNumber(currentContent);
@@ -3431,13 +3614,13 @@ ${body}
     const interval = priorityToInterval(pNum);
     const nextReview = futureDateString(interval, this.settings);
 
-    let sioyek_path = null, total_pages = null, read_point = null, source_url = null;
+    let pdf_path = null, total_pages = null, read_point = null, source_url = null;
     let video_id = null, video_url = null, video_path = null, author = null;
     let read_point_seconds = null, total_seconds = null;
 
     if (sourceType === 'book' || sourceType === 'pdf') {
-      sioyek_path = await askText(this.app, 'Absolute path to PDF/epub', '');
-      if (sioyek_path) sioyek_path = sioyek_path.replace(/^['"]|['"]$/g, '');
+      pdf_path = await askText(this.app, 'PDF path (vault-relative or absolute)', '');
+      if (pdf_path) pdf_path = pdf_path.replace(/^['"]|['"]$/g, '');
       const pages = await askText(this.app, 'Total pages', '');
       total_pages = pages ? parseInt(pages, 10) : null;
       read_point = 1;
@@ -3488,7 +3671,7 @@ ${body}
     ];
     if (read_point !== null)         fmLines.push(`read_point: ${read_point}`);
     if (total_pages !== null)        fmLines.push(`total_pages: ${total_pages}`);
-    if (sioyek_path)                 fmLines.push(`sioyek_path: ${JSON.stringify(sioyek_path)}`);
+    if (pdf_path)                    fmLines.push(`pdf_path: ${JSON.stringify(pdf_path)}`);
     if (source_url)                  fmLines.push(`source_url: ${JSON.stringify(source_url)}`);
     if (video_url)                   fmLines.push(`video_url: ${JSON.stringify(video_url)}`);
     if (video_id)                    fmLines.push(`video_id: ${JSON.stringify(video_id)}`);
@@ -3504,7 +3687,7 @@ ${body}
 
     let body = `\n# ${title}\n\n`;
     if (sourceType === 'book' || sourceType === 'pdf') {
-      body += `> [!tip] Open in viewer\n> Run **IR Open PDF** (Obsidian) or **IR Open Sioyek** (external).\n\n`;
+      body += `> [!tip] Open in viewer\n> Run **Incremental Reading Toolkit: Open PDF (Toolkit viewer)**. Vault and external PDFs are supported.\n\n`;
     } else if (sourceType === 'youtube') {
       body += `<iframe width="640" height="360" src="https://www.youtube.com/embed/${video_id}?start=${read_point_seconds}" frameborder="0" allowfullscreen></iframe>\n\n`;
     } else if (sourceType === 'video') {
@@ -3562,6 +3745,7 @@ ${body}
       fm.read_point = null;
       fm.total_pages = null;
       fm.sioyek_path = null;
+      fm.pdf_path = null;
       for (const k of ['ease', 'stability', 'difficulty', 'last_grade', 'last_retrievability']) {
         if (fm[k] !== undefined) delete fm[k];
       }
@@ -3591,9 +3775,12 @@ ${body}
   // ---- Navigation --------------------------------------------------------
 
   async openDashboard() {
-    const f = this.app.vault.getAbstractFileByPath(this.dashboardPath());
-    if (!f) { new Notice(`Dashboard not found at ${this.dashboardPath()}`); return; }
-    await this.app.workspace.getLeaf(false).openFile(f);
+    let leaf = this.app.workspace.getLeavesOfType(MAIN_DASHBOARD_VIEW_TYPE)[0];
+    if (!leaf) {
+      leaf = this.app.workspace.getLeaf('tab');
+      await leaf.setViewState({ type: MAIN_DASHBOARD_VIEW_TYPE, active: true });
+    }
+    this.app.workspace.revealLeaf(leaf);
   }
 
   async openParent() {
@@ -3617,35 +3804,28 @@ ${body}
     const r = await resolveSourceFromActive(this.app, this.settings);
     if (!r) return;
     const fm = r.fm;
-    if (!fm.sioyek_path) { new Notice('No sioyek_path set.'); return; }
-    const abs = String(fm.sioyek_path);
-    const ext = (abs.split('.').pop() || '').toLowerCase();
+    const configured = fm.pdf_vault_path || fm.pdf_path || fm.sioyek_path;
+    if (!configured) { new Notice('No pdf_path or pdf_vault_path is set.'); return; }
+    const rawPath = String(configured);
+    const ext = (rawPath.split('.').pop() || '').toLowerCase();
     if (ext === 'epub') { new Notice('Epub not supported by Obsidian viewer.'); return; }
     if (ext !== 'pdf') { new Notice(`Unsupported extension .${ext}`); return; }
     const vaultBase = vaultAbsPath(this.app, '');
-    if (!abs.startsWith(vaultBase)) {
-      new Notice('PDF outside vault. Use Open Sioyek.'); return;
+    const rel = rawPath.startsWith(vaultBase) ? rawPath.slice(vaultBase.length) : rawPath.replace(/^\/+/, '');
+    const vaultFile = this.app.vault.getAbstractFileByPath(rel);
+    let url;
+    if (vaultFile instanceof TFile) url = this.app.vault.getResourcePath(vaultFile);
+    else {
+      const absolute = rawPath.startsWith('/') ? rawPath : vaultAbsPath(this.app, rawPath);
+      const fs = require('fs');
+      if (!fs.existsSync(absolute)) { new Notice(`PDF not found at ${rawPath}`); return; }
+      url = require('url').pathToFileURL(absolute).href;
     }
-    const rel = abs.slice(vaultBase.length);
-    if (!this.app.vault.getAbstractFileByPath(rel)) { new Notice(`PDF not found at ${rel}`); return; }
     const ps = Number(fm.page_start) || null, pe = Number(fm.page_end) || null, rp = Number(fm.read_point) || null;
     let page = (rp && ps && pe) ? Math.max(ps, Math.min(rp, pe)) : (rp || ps || 1);
-    await this.app.workspace.openLinkText(`${rel}#page=${page}`, '', false);
-    new Notice(`📄 Opened at page ${page}`);
-  }
-
-  async openSioyek() {
-    const r = await resolveSourceFromActive(this.app, this.settings);
-    if (!r) return;
-    const fm = r.fm;
-    if (!fm.sioyek_path) { new Notice('No sioyek_path set.'); return; }
-    const ps = Number(fm.page_start) || null, pe = Number(fm.page_end) || null, rp = Number(fm.read_point) || null;
-    let page = (rp && ps && pe) ? Math.max(ps, Math.min(rp, pe)) : (rp || ps || 1);
-    const { execFile } = require('child_process');
-    execFile(this.settings.paths.sioyek, ['--page', String(page), fm.sioyek_path], (err) => {
-      if (err) new Notice('Failed to open Sioyek: ' + err.message);
-      else new Notice(`Opened in Sioyek at page ${page}`);
-    });
+    const leaf = this.app.workspace.getLeaf('tab');
+    await leaf.setViewState({ type: PDF_VIEW_TYPE, active: true, state: { url, page, title: r.tfile.basename, sourcePath: r.tfile.path } });
+    this.app.workspace.revealLeaf(leaf);
   }
 
   async toggleReadPoint() {
@@ -3653,8 +3833,8 @@ ${body}
     if (!active || active.extension !== 'md') { new Notice('Open a markdown source.'); return; }
     const fm = getFm(this.app, active);
     if (!fm || fm.type !== 'source') { new Notice('Not an incremental reading source.'); return; }
-    if (fm.total_pages || fm.sioyek_path) {
-      new Notice('PDF/epub source — use IR Open Sioyek/PDF.'); return;
+    if (fm.total_pages || fm.pdf_path || fm.pdf_vault_path || fm.sioyek_path) {
+      new Notice('PDF source — use Open PDF (Toolkit viewer).'); return;
     }
     const editor = getEditorForFile(this.app, active);
     const cursor = editor?.getCursor?.();
@@ -3703,8 +3883,8 @@ ${body}
     if (!active || active.extension !== 'md') { new Notice('Not a markdown source.'); return; }
     const fm = getFm(this.app, active);
     if (!fm || fm.type !== 'source') { new Notice('Not an incremental reading source.'); return; }
-    if (fm.total_pages || fm.sioyek_path) {
-      new Notice('PDF/epub — use IR Open Sioyek.'); return;
+    if (fm.total_pages || fm.pdf_path || fm.pdf_vault_path || fm.sioyek_path) {
+      new Notice('PDF — use Open PDF (Toolkit viewer).'); return;
     }
     const content = await this.app.vault.read(active);
     const m = content.match(/(?:📍\s*)?<!--ir-readpoint-->/);

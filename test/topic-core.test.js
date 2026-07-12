@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { progressAwareAFactor, hasProgressAdvanced } = require('../topic-core.js');
+const { progressAwareAFactor, hasProgressAdvanced, interleaveLearningItems } = require('../topic-core.js');
 
 const settings = { scheduling: {
   a_factor_min: 1.05,
@@ -26,4 +26,13 @@ test('chapter scheduling uses page_end instead of the whole book total', () => {
 test('Markdown marker movement counts as progress for the stall guard', () => {
   assert.equal(hasProgressAdvanced({ previousLine: 10, nextLine: 25 }), true);
   assert.equal(hasProgressAdvanced({ previousLine: 25, nextLine: 25 }), false);
+});
+
+test('learning items alternate cards and topics while preserving each ranking', () => {
+  const item = (name, type, score) => ({ name, fm: { type }, score });
+  const mixed = interleaveLearningItems([
+    item('t1', 'source', 10), item('t2', 'extract', 8), item('t3', 'source', 6),
+    item('c1', 'card', 9), item('c2', 'card', 7),
+  ], value => value.score);
+  assert.deepEqual(mixed.map(value => value.name), ['t1', 'c1', 't2', 'c2', 't3']);
 });

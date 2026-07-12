@@ -31,6 +31,25 @@ function hasProgressAdvanced({
     || Number(nextSeconds) > Number(previousSeconds)
     || Number(nextLine) > Number(previousLine);
 }
+
+// Merge independently ranked topics and cards without allowing one type to
+// monopolise the session. This mirrors SuperMemo's mixed topic/item stream
+// while leaving each scheduler responsible for ranking its own material.
+function interleaveLearningItems(items, score = () => 0) {
+  const ranked = items.slice().sort((a, b) => score(b) - score(a));
+  const topics = ranked.filter(item => item.fm?.type !== 'card');
+  const cards = ranked.filter(item => item.fm?.type === 'card');
+  if (!topics.length || !cards.length) return ranked;
+  const out = [];
+  let next = score(cards[0]) > score(topics[0]) ? 'card' : 'topic';
+  while (topics.length || cards.length) {
+    const primary = next === 'card' ? cards : topics;
+    const fallback = next === 'card' ? topics : cards;
+    out.push((primary.length ? primary : fallback).shift());
+    next = next === 'card' ? 'topic' : 'card';
+  }
+  return out;
+}
 // <<< topic-core-functions
 
-module.exports = { progressAwareAFactor, hasProgressAdvanced };
+module.exports = { progressAwareAFactor, hasProgressAdvanced, interleaveLearningItems };

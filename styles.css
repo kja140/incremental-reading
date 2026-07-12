@@ -29,6 +29,9 @@
 .ir-tree-toolbar { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
 .ir-tree-toolbar button { padding: 2px 8px; }
 .ir-tree-filter { flex: 1; min-width: 120px; }
+.ir-tree-type-filter { min-width: 110px; }
+.ir-tree-summary { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 10px; }
+.ir-tree-summary span { padding: 3px 8px; border-radius: 999px; background: var(--background-secondary); color: var(--text-muted); }
 .ir-tree-body { user-select: none; }
 .ir-tree-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; cursor: pointer; border-radius: 4px; }
 .ir-tree-row:hover { background: var(--background-modifier-hover); }
@@ -39,6 +42,9 @@
 .ir-tree-pri { font-variant-numeric: tabular-nums; opacity: 0.6; }
 .ir-tree-count { font-variant-numeric: tabular-nums; opacity: 0.5; font-size: 0.85em; }
 .ir-tree-count-warn { color: var(--text-warning); opacity: 1; font-weight: 600; }
+.ir-tree-status { font-size: 0.72em; padding: 1px 5px; border-radius: 999px; color: var(--text-muted); background: var(--background-secondary); }
+.ir-tree-status.is-inbox { color: var(--text-accent); }
+.ir-tree-status.is-done { color: var(--text-success); }
 .ir-tree-warn { color: var(--text-warning); }
 .ir-tree-unfiled > .ir-tree-title { font-style: italic; opacity: 0.8; }
 .ir-tree-actions { display: none; gap: 2px; }
@@ -50,6 +56,37 @@
 
 /* Tree row indent scales with --ir-tree-depth (set inline per row) */
 .ir-tree-row { padding-left: calc(var(--ir-tree-depth, 0) * 16px + 4px); }
+
+/* Main learning dashboard */
+.ir-dashboard-root { padding: clamp(16px, 3vw, 36px); overflow-y: auto; height: 100%; }
+.ir-dashboard-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; flex-wrap: wrap; }
+.ir-dashboard-head h1 { margin: 0; }
+.ir-dashboard-head p { color: var(--text-muted); margin-top: 5px; }
+.ir-dashboard-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.ir-dashboard-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 10px; margin: 22px 0; }
+.ir-dashboard-metric { background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 14px; }
+.ir-dashboard-metric-value { font-size: 1.8em; font-weight: 700; }
+.ir-dashboard-metric-label { color: var(--text-muted); font-size: 0.85em; }
+.ir-dashboard-metric.is-danger { border-color: var(--text-error); }
+.ir-dashboard-metric.is-warning { border-color: var(--text-warning); }
+.ir-dashboard-metric.is-success { border-color: var(--text-success); }
+.ir-dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(240px, 1fr); gap: 14px; }
+.ir-dashboard-panel { background: var(--background-primary-alt); border: 1px solid var(--background-modifier-border); border-radius: 12px; padding: 16px; }
+.ir-dashboard-panel h2 { margin-top: 0; font-size: 1.05em; }
+.ir-dashboard-session-row { display: flex; gap: 9px; align-items: center; padding: 7px 5px; border-bottom: 1px solid var(--background-modifier-border); cursor: pointer; }
+.ir-dashboard-session-row:hover { background: var(--background-modifier-hover); }
+.ir-dashboard-session-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ir-dashboard-session-kind { color: var(--text-muted); font-size: 0.75em; text-transform: uppercase; }
+.ir-dashboard-health-row { display: flex; justify-content: space-between; padding: 5px 0; text-transform: capitalize; }
+.ir-dashboard-note { color: var(--text-muted); font-size: 0.85em; margin-top: 16px; }
+@media (max-width: 700px) { .ir-dashboard-grid { grid-template-columns: 1fr; } }
+
+/* In-plugin PDF reader */
+.ir-pdf-root { height: 100%; display: flex; flex-direction: column; background: var(--background-primary); }
+.ir-pdf-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--background-modifier-border); }
+.ir-pdf-title { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ir-pdf-page { width: 72px; }
+.ir-pdf-frame { flex: 1; width: 100%; border: 0; background: #525659; }
 
 /* Generic helpers */
 .ir-hidden { display: none; }

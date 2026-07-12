@@ -20,7 +20,7 @@ test('in-app guide is registered and exposed in settings', () => {
 
 test('every plugin-managed path has a default and a settings control', () => {
   for (const key of [
-    'sources', 'extracts', 'cards', 'attachments', 'categories', 'dashboard', 'review_log', 'sioyek',
+    'sources', 'extracts', 'cards', 'attachments', 'categories', 'dashboard', 'review_log',
   ]) {
     assert.match(source, new RegExp(`\\b${key}: ['\"]`), `missing default for ${key}`);
     assert.match(source, new RegExp(`\\['${key}',`), `missing settings control for ${key}`);
