@@ -53,6 +53,8 @@ Card creation writes Spaced Repetition-compatible Markdown. Card review commands
 
 For recommended keybindings and step-by-step note, PDF, card, queue, and date workflows, see the [easy user guide](docs/USER-GUIDE.md).
 
+The same quickstart is available without leaving Obsidian: run **Incremental Reading Toolkit: Open user guide**, or select **Open user guide** at the top of the plugin settings. The plugin's **Help** action opens this README directly instead of searching the Community Plugins directory.
+
 When upgrading from a pre-release development build, run **Incremental Reading Toolkit: Migrate legacy cards to Spaced Repetition** once. The migration keeps card content and source links, adds the Spaced Repetition deck tag, and removes the legacy card-scheduling fields.
 
 ## Commands
@@ -87,7 +89,17 @@ Organise and navigate:
 
 ## Settings
 
-A-Factor behaviour, queue display, date convention, inline-card parsing patterns, Spaced Repetition separators and deck tag, vault paths, and the Sioyek executable are configurable in Incremental Reading Toolkit. Configure card algorithms and review behaviour in Spaced Repetition.
+Settings are grouped by workflow and include plain-language descriptions for:
+
+- reading intervals, progress awareness, and pace adjustments;
+- reading queue display and ordering;
+- inline-card parsing patterns;
+- Spaced Repetition dependency status, deck tag, and card separators;
+- knowledge-tree branch warnings;
+- every plugin-managed vault path and the optional Sioyek executable;
+- date convention and diagnostic logging.
+
+Use **Run setup check** at the top of the settings page to verify Spaced Repetition, folder separation, A-Factor bounds, card separators, and whether optional Sioyek support is configured. Each path setting also has a reset-to-default button. Configure card algorithms and review behaviour in Spaced Repetition itself.
 
 ## Privacy and permissions
 

@@ -1,0 +1,28 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const root = path.join(__dirname, '..');
+const source = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
+const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+
+test('manifest Help action opens the repository README', () => {
+  assert.equal(manifest.helpUrl, 'https://github.com/kja140/incremental-reading#readme');
+});
+
+test('in-app guide is registered and exposed in settings', () => {
+  assert.match(source, /cmd\('open-user-guide',\s+'Open user guide'/);
+  assert.match(source, /setButtonText\('Open user guide'\)/);
+  assert.match(source, /class UserGuideModal extends Modal/);
+});
+
+test('every plugin-managed path has a default and a settings control', () => {
+  for (const key of [
+    'sources', 'extracts', 'cards', 'attachments', 'categories', 'dashboard', 'review_log', 'sioyek',
+  ]) {
+    assert.match(source, new RegExp(`\\b${key}: ['\"]`), `missing default for ${key}`);
+    assert.match(source, new RegExp(`\\['${key}',`), `missing settings control for ${key}`);
+  }
+});

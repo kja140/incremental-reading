@@ -1,5 +1,21 @@
 # Incremental Reading Toolkit changelog
 
+## 1.0.4 — 2026-07-12
+
+### Added
+- Added an embedded quickstart, hotkey guide, daily workflow, and troubleshooting page available from
+  the command palette and plugin settings.
+- Added a direct manifest Help link to the repository README, avoiding the unavailable Community
+  directory search while the plugin awaits listing approval.
+- Added a setup check for the Spaced Repetition dependency, folder conflicts, scheduling bounds, card
+  separators, and optional Sioyek configuration.
+
+### Changed
+- Reorganized settings around user workflows with clearer names and explanations, validated numeric
+  controls, dependency status, wider text fields, and every plugin-managed folder/file path with a
+  reset-to-default action.
+- Added the knowledge-tree branch warning threshold to settings.
+
 ## 1.0.3 — 2026-07-12
 
 ### Added

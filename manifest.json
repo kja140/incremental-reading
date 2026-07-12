@@ -1,10 +1,11 @@
 {
   "id": "incremental-reading-toolkit",
   "name": "Incremental Reading Toolkit",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "minAppVersion": "1.12.7",
   "description": "Process long-form reading into scheduled topics, extracts, and Spaced Repetition flashcards.",
   "author": "kiera",
   "authorUrl": "https://github.com/kja140",
+  "helpUrl": "https://github.com/kja140/incremental-reading#readme",
   "isDesktopOnly": true
 }

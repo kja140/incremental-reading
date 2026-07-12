@@ -11,7 +11,7 @@ const packageJson = readJson('package.json');
 const versions = readJson('versions.json');
 const semver = /^\d+\.\d+\.\d+$/;
 
-for (const key of ['id', 'name', 'version', 'minAppVersion', 'description', 'author', 'isDesktopOnly']) {
+for (const key of ['id', 'name', 'version', 'minAppVersion', 'description', 'author', 'helpUrl', 'isDesktopOnly']) {
   if (manifest[key] === undefined || manifest[key] === '') fail(`manifest.json is missing ${key}`);
 }
 if (!/^[a-z-]+$/.test(manifest.id)) fail('plugin id must contain lowercase letters and hyphens only');
@@ -21,6 +21,9 @@ if (!semver.test(manifest.minAppVersion)) fail('minimum app version must use x.y
 if (!/^[\x20-\x7e]+$/.test(manifest.name)) fail('plugin name must use Basic Latin characters');
 if (manifest.description.length > 250 || !manifest.description.endsWith('.')) {
   fail('description must be at most 250 characters and end with a period');
+}
+if (!/^https:\/\/github\.com\/[^/]+\/[^/]+(?:[#/?].*)?$/.test(manifest.helpUrl)) {
+  fail('helpUrl must link to the plugin GitHub repository over HTTPS');
 }
 if (manifest.version !== packageJson.version) fail('package and manifest versions differ');
 if (versions[manifest.version] !== manifest.minAppVersion) fail('versions.json does not map the current release');

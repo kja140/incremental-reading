@@ -274,6 +274,9 @@ const DEFAULT_SETTINGS = {
     sources: 'Sources/Incremental Reading/Sources',
     extracts: 'Sources/Incremental Reading/Extracts',
     cards: 'Sources/Incremental Reading/Cards',
+    attachments: 'Sources/Incremental Reading/Attachments',
+    categories: 'Sources/Incremental Reading/Categories',
+    dashboard: 'Sources/Incremental Reading/Incremental-Reading-Dashboard.md',
     review_log: 'Sources/Incremental Reading/Review Log.md',
     sioyek: '/Applications/sioyek.app/Contents/MacOS/sioyek',
   },
@@ -870,7 +873,7 @@ function getAllIRFiles(app, settings) {
     configuredPath(settings, 'sources', SOURCES_FOLDER),
     configuredPath(settings, 'extracts', EXTRACTS_FOLDER),
     configuredPath(settings, 'cards', CARDS_FOLDER),
-    CATEGORIES_FOLDER,
+    configuredPath(settings, 'categories', CATEGORIES_FOLDER),
   ];
   const files = new Map();
   for (const folder of folders) {
@@ -1326,6 +1329,70 @@ class IRQueueView extends ItemView {
 //  Settings Tab
 // ============================================================================
 
+class UserGuideModal extends Modal {
+  onOpen() {
+    this.setTitle('Incremental Reading Toolkit guide');
+    const root = this.contentEl;
+    root.addClass('ir-guide-modal');
+
+    root.createEl('h3', { text: 'Quickstart' });
+    const quick = root.createEl('ol');
+    for (const text of [
+      'Open an article note and run Import clipping, or create a source with New source.',
+      'Run Next element and read one useful portion.',
+      'Select important text and run Extract selection.',
+      'Leave the cursor where you stopped, then run Grade and advance.',
+      'Create recall material with Flashcard from clipboard.',
+      'Study cards with Review cards (Spaced Repetition).',
+    ]) quick.createEl('li', { text });
+
+    root.createEl('h3', { text: 'Recommended hotkeys' });
+    root.createEl('p', { text: 'Open Settings -> Hotkeys and search for Incremental Reading Toolkit. These are suggestions, not defaults.' });
+    const table = root.createEl('table');
+    const head = table.createEl('thead').createEl('tr');
+    head.createEl('th', { text: 'Command' });
+    head.createEl('th', { text: 'Suggested hotkey' });
+    const body = table.createEl('tbody');
+    for (const [command, hotkey] of [
+      ['Next element', 'Cmd/Ctrl+Shift+J'],
+      ['Grade and advance', 'Cmd/Ctrl+Shift+Enter'],
+      ['Extract selection', 'Cmd/Ctrl+Shift+E'],
+      ['Extract from clipboard', 'Cmd/Ctrl+Alt+E'],
+      ['Flashcard from clipboard', 'Cmd/Ctrl+Shift+F'],
+      ['Toggle read-point', 'Cmd/Ctrl+Shift+P'],
+      ['Review cards', 'Cmd/Ctrl+Shift+R'],
+    ]) {
+      const row = body.createEl('tr');
+      row.createEl('td', { text: command });
+      row.createEl('td').createEl('code', { text: hotkey });
+    }
+
+    root.createEl('h3', { text: 'Daily reading loop' });
+    const daily = root.createEl('ul');
+    for (const text of [
+      'Next element opens the highest-urgency source or extract.',
+      'Extracts remain reading topics; cards are reviewed in Spaced Repetition.',
+      'Moving the Markdown read-point or advancing a page/timestamp counts as progress.',
+      'Use Mercy to spread overdue work and Postpone subtree to move related material together.',
+    ]) daily.createEl('li', { text });
+
+    root.createEl('h3', { text: 'PDFs, cards, and dates' });
+    root.createEl('p', { text: 'Use Open PDF for vault PDFs and Open in Sioyek for external PDFs or EPUB files. Card algorithms and statistics live in Spaced Repetition.' });
+    root.createEl('p', { text: 'Choose DD-MM-YYYY, MM-DD-YYYY, or YYYY-MM-DD in General settings. Relative schedules such as +3d work with every format.' });
+
+    root.createEl('h3', { text: 'Troubleshooting' });
+    const trouble = root.createEl('ul');
+    for (const text of [
+      'No cards in review: enable Spaced Repetition and keep #flashcards in its flashcard tags.',
+      'External PDF will not open: confirm the Sioyek executable and source path in settings.',
+      'Ambiguous tree parent: rename files that share the same basename.',
+      'For the full guide, open docs/USER-GUIDE.md in the GitHub repository from the Help link.',
+    ]) trouble.createEl('li', { text });
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
 class IncrementalReadingSettingTab extends PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
@@ -1335,50 +1402,79 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
+    this._about(containerEl);
     this._scheduling(containerEl);
     this._queue(containerEl);
     this._inlineCards(containerEl);
     this._spacedRepetition(containerEl);
+    this._knowledgeTree(containerEl);
     this._paths(containerEl);
     this._misc(containerEl);
   }
 
+  _about(root) {
+    const sec = root.createDiv({ cls: 'ir-settings-section' });
+    new Setting(sec).setName(`Incremental Reading Toolkit ${this.plugin.manifest.version}`).setHeading();
+    new Setting(sec)
+      .setName('User guide')
+      .setDesc('Open the quickstart, suggested hotkeys, daily workflow, and troubleshooting inside Obsidian.')
+      .addButton(button => button.setButtonText('Open user guide').setCta().onClick(() => this.plugin.openUserGuide()));
+    const ready = this.plugin.isSpacedRepetitionReady();
+    new Setting(sec)
+      .setName('Setup status')
+      .setDesc(ready ? 'Spaced Repetition is ready for card review.' : 'Spaced Repetition is not ready; enable it before reviewing cards.')
+      .addButton(button => button.setButtonText('Run setup check').onClick(() => this.plugin.runSetupCheck()));
+  }
+
+  _numberSetting(section, name, description, target, key, { min, max, step = 'any' } = {}) {
+    const save = () => this.plugin.saveSettings();
+    new Setting(section).setName(name).setDesc(description).addText(text => {
+      text.inputEl.type = 'number';
+      text.inputEl.step = String(step);
+      if (min != null) text.inputEl.min = String(min);
+      if (max != null) text.inputEl.max = String(max);
+      text.setValue(String(target[key])).onChange(value => {
+        const number = Number(value);
+        const valid = Number.isFinite(number)
+          && (min == null || number >= min)
+          && (max == null || number <= max);
+        text.inputEl.toggleClass('is-invalid', !valid);
+        if (!valid) return;
+        target[key] = number;
+        save();
+      });
+    });
+  }
+
   _scheduling(root) {
     const sec = root.createDiv({ cls: 'ir-settings-section' });
+    new Setting(sec).setName('Reading schedule').setHeading();
     const s = this.plugin.settings.scheduling;
     const save = () => this.plugin.saveSettings();
 
     new Setting(sec)
       .setName('Progress-aware A-Factor')
-      .setDesc('Recompute a_factor each rep from remaining pages/seconds.')
+      .setDesc('Adjust intervals from the pages or media time still remaining. Recommended for books, PDFs, and videos.')
       .addToggle(t => t.setValue(s.progress_aware).onChange(v => { s.progress_aware = v; save(); }));
 
     new Setting(sec)
       .setName('Stall guard')
-      .setDesc('Cap interval growth when read_point does not advance between reps.')
+      .setDesc('Prevent intervals from growing when the page, timestamp, or Markdown read-point does not move.')
       .addToggle(t => t.setValue(s.stall_guard).onChange(v => { s.stall_guard = v; save(); }));
 
-    new Setting(sec).setName('A-Factor min').addText(t =>
-      t.setValue(String(s.a_factor_min)).onChange(v => { s.a_factor_min = Number(v) || 1.05; save(); }));
-    new Setting(sec).setName('A-Factor max').addText(t =>
-      t.setValue(String(s.a_factor_max)).onChange(v => { s.a_factor_max = Number(v) || 5.0; save(); }));
+    this._numberSetting(sec, 'Minimum A-Factor', 'Smallest interval-growth multiplier. Values just above 1 keep material in frequent rotation.', s, 'a_factor_min', { min: 1.01, max: 10, step: 0.01 });
+    this._numberSetting(sec, 'Maximum A-Factor', 'Largest interval-growth multiplier allowed for nearly finished material.', s, 'a_factor_max', { min: 1.01, max: 10, step: 0.01 });
 
-    new Setting(sec).setName('Quality factor — hold').addText(t =>
-      t.setValue(String(s.quality_hold)).onChange(v => { s.quality_hold = Number(v) || 1.0; save(); }));
-    new Setting(sec).setName('Quality factor — speed up').addText(t =>
-      t.setValue(String(s.quality_speed_up)).onChange(v => { s.quality_speed_up = Number(v) || 0.95; save(); }));
-    new Setting(sec).setName('Quality factor — slow down').addText(t =>
-      t.setValue(String(s.quality_slow_down)).onChange(v => { s.quality_slow_down = Number(v) || 1.05; save(); }));
+    new Setting(sec).setName('Review pace adjustments').setHeading();
+    this._numberSetting(sec, 'Hold multiplier', 'Applied when choosing Hold. Use 1 to keep the current A-Factor.', s, 'quality_hold', { min: 0.1, max: 3, step: 0.01 });
+    this._numberSetting(sec, 'See sooner multiplier', 'Applied when choosing Speed up. Values below 1 shorten future growth.', s, 'quality_speed_up', { min: 0.1, max: 3, step: 0.01 });
+    this._numberSetting(sec, 'Push out multiplier', 'Applied when choosing Slow down. Values above 1 lengthen future growth.', s, 'quality_slow_down', { min: 0.1, max: 3, step: 0.01 });
 
-    new Setting(sec).setName('Initial A-Factor — base').addText(t =>
-      t.setValue(String(s.initial_af_base)).onChange(v => { s.initial_af_base = Number(v) || 2.5; save(); }));
-    new Setting(sec).setName('Initial A-Factor — slope').addText(t =>
-      t.setValue(String(s.initial_af_slope)).onChange(v => { s.initial_af_slope = Number(v) || 0.25; save(); }));
-    new Setting(sec).setName('Initial A-Factor — units divisor').addText(t =>
-      t.setValue(String(s.initial_af_units_divisor)).onChange(v => { s.initial_af_units_divisor = Number(v) || 10; save(); }));
-
-    new Setting(sec).setName('Extract bump').setDesc('Multiplier applied to parent a_factor when an extract is created.')
-      .addText(t => t.setValue(String(s.extract_bump)).onChange(v => { s.extract_bump = Number(v) || 1.05; save(); }));
+    new Setting(sec).setName('Initial interval model').setHeading();
+    this._numberSetting(sec, 'Base A-Factor', 'Starting multiplier before source length is considered.', s, 'initial_af_base', { min: 1.01, max: 10, step: 0.01 });
+    this._numberSetting(sec, 'Length sensitivity', 'How strongly longer sources receive smaller A-Factors.', s, 'initial_af_slope', { min: 0, max: 3, step: 0.01 });
+    this._numberSetting(sec, 'Length scale', 'Pages, or minutes for media, treated as the neutral source size.', s, 'initial_af_units_divisor', { min: 1, max: 10000, step: 1 });
+    this._numberSetting(sec, 'Extract bump', 'Multiplier applied to the parent A-Factor after creating an extract.', s, 'extract_bump', { min: 0.1, max: 3, step: 0.01 });
   }
 
   _queue(root) {
@@ -1387,10 +1483,14 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
     const s = this.plugin.settings.queue;
     const save = () => this.plugin.saveSettings();
     new Setting(sec).setName('Sidebar enabled')
+      .setDesc('Allow the reading queue to open in the sidebar and refresh as notes change.')
       .addToggle(t => t.setValue(s.sidebar_enabled).onChange(v => { s.sidebar_enabled = v; save(); }));
     new Setting(sec).setName('Default tag filter')
+      .setDesc('Initial sidebar filter. Leave empty to show every scheduled topic.')
       .addText(t => t.setValue(s.default_tag_filter).onChange(v => { s.default_tag_filter = v; save(); }));
-    new Setting(sec).setName('Sort key').addDropdown(d => {
+    new Setting(sec).setName('Supplementary list order')
+      .setDesc('Controls overdue, new, and unscheduled sections. Today\'s session keeps its scheduled order.')
+      .addDropdown(d => {
       d.addOption('urgency', 'Urgency').addOption('priority', 'Priority').addOption('due_date', 'Due date')
        .setValue(s.sort_key).onChange(v => { s.sort_key = v; save(); });
     });
@@ -1402,10 +1502,13 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
     const s = this.plugin.settings.inline_cards;
     const save = () => this.plugin.saveSettings();
     new Setting(sec).setName('Enabled')
+      .setDesc('Allow Export inline cards to recognize question/answer, cloze, and highlighted-text forms.')
       .addToggle(t => t.setValue(s.enabled).onChange(v => { s.enabled = v; save(); }));
     new Setting(sec).setName('Q::A regex')
+      .setDesc('Advanced pattern for one-line Q::question::A::answer cards.')
       .addText(t => t.setValue(s.qa_regex).onChange(v => { s.qa_regex = v; save(); }));
     new Setting(sec).setName('Cloze regex')
+      .setDesc('Advanced pattern for {{c1::answer::hint}} cards.')
       .addText(t => t.setValue(s.cloze_regex).onChange(v => { s.cloze_regex = v; save(); }));
   }
 
@@ -1414,6 +1517,11 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
     new Setting(sec).setName('Spaced Repetition').setHeading();
     const s = this.plugin.settings.spaced_repetition;
     const save = () => this.plugin.saveSettings();
+    new Setting(sec)
+      .setName('Dependency')
+      .setDesc(this.plugin.isSpacedRepetitionReady()
+        ? 'Ready. Card review commands will open Spaced Repetition.'
+        : 'Not ready. Install and enable the Spaced Repetition community plugin.');
     new Setting(sec)
       .setName('Flashcard deck tag')
       .setDesc('Match a flashcard tag configured in Spaced Repetition. Do not include the leading #.')
@@ -1437,27 +1545,54 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
       }));
   }
 
+  _knowledgeTree(root) {
+    const sec = root.createDiv({ cls: 'ir-settings-section' });
+    new Setting(sec).setName('Knowledge tree').setHeading();
+    this._numberSetting(
+      sec,
+      'Large branch warning',
+      'Highlight a category child count after it exceeds this number.',
+      this.plugin.settings.tree,
+      'child_warn_threshold',
+      { min: 1, max: 100000, step: 1 },
+    );
+  }
+
   _paths(root) {
     const sec = root.createDiv({ cls: 'ir-settings-section' });
     new Setting(sec).setName('Paths').setHeading();
     const s = this.plugin.settings.paths;
     const save = () => this.plugin.saveSettings();
     const paths = [
-      ['sources', 'Sources folder'],
-      ['extracts', 'Extracts folder'],
-      ['cards', 'Cards folder'],
-      ['review_log', 'Review log file'],
-      ['sioyek', 'Sioyek executable'],
+      ['sources', 'Sources folder', 'Source notes and local video files.'],
+      ['extracts', 'Extracts folder', 'Passages scheduled as separate reading topics.'],
+      ['cards', 'Cards folder', 'Markdown cards consumed by Spaced Repetition.'],
+      ['attachments', 'Attachments folder', 'Clipboard images and visual-learning assets.'],
+      ['categories', 'Categories folder', 'Knowledge-tree category notes.'],
+      ['dashboard', 'Dashboard note', 'Optional session snapshot and dashboard note path.'],
+      ['review_log', 'Review log', 'Markdown table containing completed topic reviews.'],
+      ['sioyek', 'Sioyek executable', 'Absolute executable path used only by Open in Sioyek.'],
     ];
-    for (const [key, name] of paths) {
-      new Setting(sec).setName(name)
-        .addText(t => t.setValue(s[key]).onChange(v => { s[key] = v; save(); }));
+    for (const [key, name, description] of paths) {
+      new Setting(sec).setName(name).setDesc(description)
+        .addText(t => t
+          .setPlaceholder(DEFAULT_SETTINGS.paths[key])
+          .setValue(s[key] || DEFAULT_SETTINGS.paths[key])
+          .onChange(v => { s[key] = v.trim() || DEFAULT_SETTINGS.paths[key]; save(); }))
+        .addExtraButton(button => button
+          .setIcon('rotate-ccw')
+          .setTooltip(`Reset ${name.toLowerCase()}`)
+          .onClick(async () => {
+            s[key] = DEFAULT_SETTINGS.paths[key];
+            await save();
+            this.display();
+          }));
     }
   }
 
   _misc(root) {
     const sec = root.createDiv({ cls: 'ir-settings-section' });
-    new Setting(sec).setName('Advanced').setHeading();
+    new Setting(sec).setName('General').setHeading();
     const s = this.plugin.settings.misc;
     const save = () => this.plugin.saveSettings();
     new Setting(sec).setName('Date format')
@@ -1477,7 +1612,9 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
           }
         });
       });
+    new Setting(sec).setName('Diagnostics').setHeading();
     new Setting(sec).setName('Debug logging')
+      .setDesc('Write additional details to the developer console. Keep disabled during normal use.')
       .addToggle(t => t.setValue(s.debug).onChange(v => { s.debug = v; save(); }));
   }
 }
@@ -1802,6 +1939,7 @@ class IncrementalReadingPlugin extends Plugin {
 
     // Navigation / reading
     cmd('open-dashboard',     'Open dashboard',                  () => this.openDashboard());
+    cmd('open-user-guide',    'Open user guide',                 () => this.openUserGuide());
     cmd('open-parent',        'Open parent',                     () => this.openParent());
     cmd('open-pdf',           'Open PDF (Obsidian viewer)',      () => this.openPdf());
     cmd('open-sioyek',        'Open in Sioyek',                  () => this.openSioyek());
@@ -1830,6 +1968,9 @@ class IncrementalReadingPlugin extends Plugin {
   sourcesFolder() { return configuredPath(this.settings, 'sources', SOURCES_FOLDER); }
   extractsFolder() { return configuredPath(this.settings, 'extracts', EXTRACTS_FOLDER); }
   cardsFolder() { return configuredPath(this.settings, 'cards', CARDS_FOLDER); }
+  attachmentsFolder() { return configuredPath(this.settings, 'attachments', ATTACHMENTS_FOLDER); }
+  categoriesFolder() { return configuredPath(this.settings, 'categories', CATEGORIES_FOLDER); }
+  dashboardPath() { return configuredPath(this.settings, 'dashboard', DASHBOARD_PATH); }
   reviewLogPath() { return configuredPath(this.settings, 'review_log', REVIEW_LOG_PATH); }
 
   _nativeCardText(value) {
@@ -1973,6 +2114,45 @@ class IncrementalReadingPlugin extends Plugin {
     }
   }
 
+  openUserGuide() {
+    new UserGuideModal(this.app).open();
+  }
+
+  isSpacedRepetitionReady() {
+    const commands = this.app.commands.listCommands?.() || [];
+    return commands.some(command => command.id === SPACED_REPETITION_REVIEW_COMMAND);
+  }
+
+  runSetupCheck() {
+    const issues = [];
+    const notes = [];
+    if (!this.isSpacedRepetitionReady()) issues.push('Enable Spaced Repetition for card review.');
+    const vaultPaths = [
+      ['Sources', this.sourcesFolder()],
+      ['Extracts', this.extractsFolder()],
+      ['Cards', this.cardsFolder()],
+      ['Attachments', this.attachmentsFolder()],
+      ['Categories', this.categoriesFolder()],
+    ];
+    const normalized = vaultPaths.map(([, path]) => path.toLowerCase());
+    if (new Set(normalized).size !== normalized.length) issues.push('Vault folders must use distinct paths.');
+    if (!(Number(this.settings.scheduling.a_factor_min) > 1)) issues.push('A-Factor minimum must be greater than 1.');
+    if (!(Number(this.settings.scheduling.a_factor_max) >= Number(this.settings.scheduling.a_factor_min))) {
+      issues.push('A-Factor maximum must be at least the minimum.');
+    }
+    if (this._spacedRepetitionSettings().multilineCardSeparator === this._spacedRepetitionSettings().multilineReversedCardSeparator) {
+      issues.push('Basic and bidirectional card separators must differ.');
+    }
+    if (!String(this.settings.paths.sioyek || '').trim()) notes.push('Sioyek is not configured; external PDF/EPUB opening will be unavailable.');
+    if (issues.length) {
+      new Notice(`Setup needs attention:\n- ${issues.join('\n- ')}`, 12000);
+      return false;
+    }
+    const detail = notes.length ? `\n${notes.join('\n')}` : '';
+    new Notice(`Setup ready. Date format: ${configuredDateFormat(this.settings)}. Spaced Repetition is available.${detail}`, 8000);
+    return true;
+  }
+
   async saveSettings() {
     await this.saveData(this.settings);
   }
@@ -1980,7 +2160,7 @@ class IncrementalReadingPlugin extends Plugin {
   async migrateDateFormat(fromFormat, toFormat) {
     const keys = ['next_review', 'last_reviewed', 'date_added', 'date_dismissed', 'today_session_date'];
     const files = new Map(getAllIRFiles(this.app, this.settings).map(file => [file.path, file]));
-    const dashboard = this.app.vault.getAbstractFileByPath(DASHBOARD_PATH);
+    const dashboard = this.app.vault.getAbstractFileByPath(this.dashboardPath());
     if (dashboard instanceof TFile) files.set(dashboard.path, dashboard);
     let changed = 0;
     for (const file of files.values()) {
@@ -2041,7 +2221,7 @@ class IncrementalReadingPlugin extends Plugin {
   // `today_session_paths`). Returns active, not-reviewed-today items in
   // snapshot order. Null if no fresh snapshot exists.
   readSessionSnapshot() {
-    const dash = this.app.vault.getAbstractFileByPath(DASHBOARD_PATH);
+    const dash = this.app.vault.getAbstractFileByPath(this.dashboardPath());
     if (!dash) return null;
     const fm = getFm(this.app, dash);
     const todayStr = todayDateString(this.settings);
@@ -2067,7 +2247,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async persistSessionSnapshot(queue) {
-    const dash = this.app.vault.getAbstractFileByPath(DASHBOARD_PATH);
+    const dash = this.app.vault.getAbstractFileByPath(this.dashboardPath());
     if (!dash) return;
     const paths = queue.map(q => q.tfile?.path).filter(Boolean);
     if (!paths.length) return;
@@ -2377,8 +2557,8 @@ class IncrementalReadingPlugin extends Plugin {
     if (!name) return null;
     const safe = slugifyForFolder(name);
     if (!safe) { new Notice('Invalid category name'); return null; }
-    await ensureFolder(this.app, CATEGORIES_FOLDER);
-    const path = `${CATEGORIES_FOLDER}/${safe}.md`;
+    await ensureFolder(this.app, this.categoriesFolder());
+    const path = `${this.categoriesFolder()}/${safe}.md`;
     if (this.app.vault.getAbstractFileByPath(path)) { new Notice('Category already exists'); return null; }
     const fm = ['---', 'type: category'];
     if (parentName) fm.push(`parent: ${JSON.stringify(`[[${parentName}]]`)}`);
@@ -3009,7 +3189,7 @@ ${body}
     if (imgClip) {
       const ext = imgClip.mime === 'image/jpeg' ? 'jpg'
         : (imgClip.mime === 'image/webp' ? 'webp' : 'png');
-      const attachDir = `${ATTACHMENTS_FOLDER}/${slugifyForFolder(parentTitle)}`;
+      const attachDir = `${this.attachmentsFolder()}/${slugifyForFolder(parentTitle)}`;
       await ensureFolder(this.app, attachDir);
       const hash = await shortHashOfBytes(imgClip.bytes);
       imgPath = `${attachDir}/img-${hash}.${ext}`;
@@ -3065,7 +3245,7 @@ ${body}
           const link = String(r.fm.source || '').match(/\[\[([^\]|#]+)/);
           return link ? link[1] : r.tfile.basename;
         })();
-    const attachDir = `${ATTACHMENTS_FOLDER}/${slugifyForFolder(parentBase)}`;
+    const attachDir = `${this.attachmentsFolder()}/${slugifyForFolder(parentBase)}`;
     const folderFiles = filesInFolder(this.app, attachDir).filter(f =>
       f.path.startsWith(attachDir + '/') && /\.(png|jpe?g|webp|gif)$/i.test(f.name));
 
@@ -3098,7 +3278,7 @@ ${body}
     if (!r) return;
 
     const sourceFolder = slugifyForFolder(r.tfile.basename);
-    const attachDir = `${ATTACHMENTS_FOLDER}/${sourceFolder}`;
+    const attachDir = `${this.attachmentsFolder()}/${sourceFolder}`;
 
     // Two clipboard formats supported:
     //   1. binary image (e.g. screen-capture, Preview.app copy)
@@ -3169,7 +3349,7 @@ ${body}
             const link = String(r.fm.source || '').match(/\[\[([^\]|#]+)/);
             return link ? link[1] : r.tfile.basename;
           })();
-      const dir = `${ATTACHMENTS_FOLDER}/${slugifyForFolder(parentBase)}`;
+      const dir = `${this.attachmentsFolder()}/${slugifyForFolder(parentBase)}`;
       const folder = this.app.vault.getAbstractFileByPath(dir);
       if (!folder) {
         new Notice('No images for this source. Use Image-extract (Mod+Shift+K) first or embed an image.');
@@ -3411,8 +3591,8 @@ ${body}
   // ---- Navigation --------------------------------------------------------
 
   async openDashboard() {
-    const f = this.app.vault.getAbstractFileByPath(DASHBOARD_PATH);
-    if (!f) { new Notice(`Dashboard not found at ${DASHBOARD_PATH}`); return; }
+    const f = this.app.vault.getAbstractFileByPath(this.dashboardPath());
+    if (!f) { new Notice(`Dashboard not found at ${this.dashboardPath()}`); return; }
     await this.app.workspace.getLeaf(false).openFile(f);
   }
 

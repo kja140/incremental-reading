@@ -13,6 +13,16 @@
 .ir-timeline-row { padding: 2px 4px; cursor: pointer; }
 .ir-timeline-row:hover { background: var(--background-modifier-hover); }
 .ir-settings-section { margin-bottom: 16px; }
+.ir-settings-section input.is-invalid { border-color: var(--text-error); }
+.ir-settings-section input[type='text'] { width: min(360px, 42vw); }
+
+/* In-app quickstart and user guide */
+.ir-guide-modal { max-height: 72vh; overflow-y: auto; }
+.ir-guide-modal h3 { margin-top: 20px; }
+.ir-guide-modal table { width: 100%; border-collapse: collapse; }
+.ir-guide-modal th,
+.ir-guide-modal td { padding: 6px 8px; border-bottom: 1px solid var(--background-modifier-border); text-align: left; }
+.ir-guide-modal code { white-space: nowrap; }
 
 /* Incremental Reading knowledge tree */
 .ir-tree-root { padding: 8px; font-size: var(--font-ui-small); }

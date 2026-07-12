@@ -1,6 +1,6 @@
 {
   "name": "incremental-reading",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Incremental reading with scheduled topics, extracts, and Spaced Repetition flashcards.",
   "main": "main.js",
   "scripts": {

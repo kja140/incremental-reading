@@ -6,10 +6,12 @@ This guide starts with a small daily workflow. You do not need to configure ever
 
 1. Install and enable **Spaced Repetition**.
 2. Install and enable **Incremental Reading Toolkit**.
-3. Open **Settings -> Incremental Reading Toolkit** and confirm the source, extract, and card folders.
-4. Choose your date format under **Advanced**. Available formats are `DD-MM-YYYY`, `MM-DD-YYYY`, and `YYYY-MM-DD`.
+3. Open **Settings -> Incremental Reading Toolkit** and select **Run setup check**.
+4. Confirm the managed vault paths, then choose a date format under **General**. Available formats are `DD-MM-YYYY`, `MM-DD-YYYY`, and `YYYY-MM-DD`.
 
 Changing the date format migrates existing scheduling fields, checkpoints, dashboard dates, and review-log dates.
+
+Select **Open user guide** at the top of the settings page, or run **Incremental Reading Toolkit: Open user guide**, whenever you want the quickstart and recommended hotkeys inside Obsidian. The plugin's **Help** action opens the project README directly.
 
 ## Five-minute quickstart
 
@@ -101,7 +103,7 @@ Open **Knowledge tree** to create categories, drag material under a parent, reor
 
 ## Date formats
 
-Select a format in **Settings -> Incremental Reading Toolkit -> Advanced -> Date format**:
+Select a format in **Settings -> Incremental Reading Toolkit -> General -> Date format**:
 
 - `DD-MM-YYYY`, for example `12-07-2026`;
 - `MM-DD-YYYY`, for example `07-12-2026`;
@@ -129,4 +131,4 @@ Rename one of the files sharing the same basename, then reparent the child.
 
 **A date is rejected**
 
-Check the selected date format in the plugin's Advanced settings, or enter a relative value such as `+1d`.
+Check the selected date format in the plugin's General settings, or enter a relative value such as `+1d`.
