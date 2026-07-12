@@ -1,9 +1,9 @@
 {
-  "id": "ir-toolkit",
-  "name": "IR Toolkit",
-  "version": "0.3.0",
-  "minAppVersion": "1.5.0",
-  "description": "Schedule notes, PDFs, and flashcards for spaced-repetition review with FSRS and SuperMemo-style incremental reading, using commands that work from any file type.",
+  "id": "incremental-reading",
+  "name": "Incremental Reading",
+  "version": "1.0.0",
+  "minAppVersion": "1.12.7",
+  "description": "Process long-form reading into scheduled topics, extracts, and Spaced Repetition flashcards.",
   "author": "kiera",
   "authorUrl": "https://github.com/kja140",
   "isDesktopOnly": true

@@ -1,0 +1,32 @@
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Verify tag matches manifest
+        run: test "${GITHUB_REF_NAME}" = "$(node -p "require('./manifest.json').version")"
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          --draft
+          --generate-notes
+          --title "Incremental Reading ${GITHUB_REF_NAME}"
+          main.js manifest.json styles.css

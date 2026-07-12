@@ -14,6 +14,11 @@ test('effectiveParent prefers parent over source', () => {
   assert.equal(effectiveParent(null), null);
 });
 
+test('effectiveParent honors an explicit tree root override', () => {
+  assert.equal(effectiveParent({ tree_root: true, source: '[[Book]]' }), null);
+  assert.equal(effectiveParent({ tree_root: false, source: '[[Book]]' }), 'Book');
+});
+
 test('buildTreeIndex groups children under resolvable parents', () => {
   const pages = [
     page('Categories/Psych.md', 'Psych', { type: 'category', tree_order: 10 }),

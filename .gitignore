@@ -4,3 +4,5 @@ data.json
 *.bak.*
 .DS_Store
 .claude/
+.firecrawl/
+npm-debug.log*

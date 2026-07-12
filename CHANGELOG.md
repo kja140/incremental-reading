@@ -1,4 +1,26 @@
-# IR Toolkit Changelog
+# Incremental Reading changelog
+
+## 1.0.0 — 2026-07-12
+
+### Changed
+- **Renamed to Incremental Reading.** The release ID and folder name are now `incremental-reading`.
+- Documented the project's inspiration from SuperMemo incremental reading and the Incremental Writing
+  plugin, including a feature-by-feature alignment guide and the intentional scheduling differences.
+- **Spaced Repetition powers card review.** Card review commands delegate to its Obsidian commands.
+- New card notes use native Spaced Repetition markdown and the `#flashcards/incremental-reading` deck.
+  Basic, bidirectional, cloze, image, inline-export, and image-occlusion paths are covered.
+- Incremental Reading's queue and statistics now own sources/extracts only. Spaced Repetition owns all card
+  scheduling, review history, and card statistics.
+- Added **Migrate legacy cards to Spaced Repetition** for pre-0.4 card notes. Existing inline cards
+  can be materialized with **Export inline cards to Spaced Repetition**.
+
+### Fixed
+- All editable source, extract, card, review-log, and Sioyek paths are now used at runtime. The
+  unused daily-note setting was removed.
+- Moving an extract or card to the knowledge-tree root now persists an explicit `tree_root: true`
+  override instead of falling back to its `source` link.
+- User-entered source titles and derived extract/card/chapter filenames are sanitized before vault
+  creation. User-entered YAML string values are safely quoted.
 
 ## v0.3.0 — 2026-05-26
 
@@ -54,7 +76,7 @@ v0.2.0's bug-audit commit (`779d8d7`) reported six items audited but only fixed 
 - **Stall guard**: interval cannot grow while `read_point` is unchanged between consecutive reps. Prevents books drifting into long intervals without progress.
 - **FSRS-6 card scheduler**. Matches the canonical `open-spaced-repetition/ts-fsrs` v6 implementation: exponential initial difficulty `D0(G) = w4 - exp(w5*(G-1)) + 1`, linear-damped difficulty update with mean reversion toward `D0(Easy)`, personalized forgetting curve via `decay` (w20), independent hard (w15) and easy (w16) multipliers, same-day short-term stability path. 19-weight vector (w0..w18) replaces the old 17-weight FSRS-4.5 array.
 - **Settings tab** covering Scheduling, FSRS, Queue, Inline cards, Paths, and Misc. All previously hard-coded constants are now editable from Obsidian's settings UI. Persists to `data.json` in the plugin directory.
-- **Sidebar review queue** (`Open IR queue sidebar` command). Groups items into Overdue / Due Today / New / Active. Live filter input matches against tags or title substring. Configurable sort key (urgency / priority / due_date). Clicking a row opens the file and jumps to its read-point. Auto-refreshes on file modify + 30-second timer for midnight rollover.
+- **Sidebar review queue** (`Open reading queue sidebar` command). Groups items into Overdue / Due Today / New / Active. Live filter input matches against tags or title substring. Configurable sort key (urgency / priority / due_date). Clicking a row opens the file and jumps to its read-point. Auto-refreshes on file modify + 30-second timer for midnight rollover.
 - **Inline cards.** `Q:: ... ::A:: ...`, `{{c1::cloze}}`, and optional `==highlight==` forms parse out of source/extract bodies and surface in the sidebar's New / Due Today / Overdue sections. FSRS-6 state lives in the source file's `inline_cards[]` frontmatter array — no card files created. New `Seed inline cards from current file body` command scans the active file and appends new entries with `status: pending`. Click an inline card in the sidebar to grade it.
 - **Timeline checkpoints.** New `Add timeline checkpoint` command (also accessible from an input box in the sidebar Timeline panel) appends to a `checkpoints[]` array in the source's frontmatter. Optional `Nd::` prefix overrides `next_review` to `today + N days`. Clicking a checkpoint in the sidebar scrolls the editor to the checkpoint's saved line.
 

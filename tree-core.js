@@ -1,5 +1,5 @@
 'use strict';
-// Pure, Obsidian-free tree logic for the IR Toolkit knowledge tree.
+// Pure, Obsidian-free tree logic for the Incremental Reading knowledge tree.
 // A "page" is a plain object: { path, basename, fm }.
 
 // >>> tree-core-functions (verbatim-shared with main.js; drift-checked by test/inline-sync.test.js)
@@ -13,9 +13,10 @@ function linkTargetName(value) {
   return name || null;
 }
 
-// Effective parent NAME: explicit `parent` link wins, else `source` (legacy fallback).
+// Effective parent NAME: explicit root wins, then `parent`, then `source` (legacy fallback).
 function effectiveParent(fm) {
   if (!fm) return null;
+  if (fm.tree_root === true) return null;
   return linkTargetName(fm.parent) || linkTargetName(fm.source) || null;
 }
 

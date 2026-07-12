@@ -1,8 +1,8 @@
 'use strict';
 
 const {
-  Plugin, Notice, Modal, FuzzySuggestModal, SuggestModal, TFile, parseYaml,
-  MarkdownRenderer, Component, PluginSettingTab, Setting, ItemView, WorkspaceLeaf,
+  Plugin, Notice, Modal, FuzzySuggestModal, TFile, parseYaml, FileSystemAdapter,
+  PluginSettingTab, Setting, ItemView, normalizePath,
 } = require('obsidian');
 // Obsidian's plugin loader evaluates this file without a resolvable __dirname, so
 // `require('./tree-core.js')` fails ("Cannot find module"). The tree logic is therefore
@@ -20,9 +20,10 @@ function linkTargetName(value) {
   return name || null;
 }
 
-// Effective parent NAME: explicit `parent` link wins, else `source` (legacy fallback).
+// Effective parent NAME: explicit root wins, then `parent`, then `source` (legacy fallback).
 function effectiveParent(fm) {
   if (!fm) return null;
+  if (fm.tree_root === true) return null;
   return linkTargetName(fm.parent) || linkTargetName(fm.source) || null;
 }
 
@@ -97,6 +98,25 @@ function computeReorder(siblings, movedPath, targetIndex) {
   return { linkTargetName, effectiveParent, siblingComparator, buildTreeIndex, wouldCreateCycle, computeReorder };
 })();
 
+const spacedRepetitionCore = (function () {
+// >>> spaced-repetition-core-functions
+function nativeCardText(value) {
+  return String(value ?? '').trim().replace(/\r/g, '').replace(/\n[ \t]*\n+/g, '\n<br>\n');
+}
+
+function spacedRepetitionBody(format, question, answer, settings = {}) {
+  const q = nativeCardText(question);
+  const a = nativeCardText(answer);
+  if (format === 'cloze') return q + '\n';
+  const separator = format === 'reverse'
+    ? (settings.multilineReversedCardSeparator || '??')
+    : (settings.multilineCardSeparator || '?');
+  return `${q}\n${separator}\n${a}\n`;
+}
+// <<< spaced-repetition-core-functions
+  return { nativeCardText, spacedRepetitionBody };
+})();
+
 // ============================================================================
 //  Constants
 // ============================================================================
@@ -111,6 +131,9 @@ const KNOWLEDGE_TREE_VIEW_TYPE = 'ir-tree-view';
 const KNOWLEDGE_TREE_SIDEBAR_TYPE = 'ir-tree-sidebar';
 const REVIEW_LOG_PATH = `${ROOT}/Review Log.md`;
 const DASHBOARD_PATH = `${ROOT}/Incremental-Reading-Dashboard.md`;
+const SPACED_REPETITION_PLUGIN_ID = 'obsidian-spaced-repetition';
+const SPACED_REPETITION_REVIEW_COMMAND = `${SPACED_REPETITION_PLUGIN_ID}:srs-review-flashcards`;
+const SPACED_REPETITION_NOTE_COMMAND = `${SPACED_REPETITION_PLUGIN_ID}:srs-review-flashcards-in-note`;
 
 const READ_POINT_MARKER = '📍<!--ir-readpoint-->';
 const READ_POINT_RE = /(?:📍\s*)?<!--ir-readpoint-->/g;
@@ -120,11 +143,6 @@ const BODY_MARKER = '<!--ir-card-body-->';
 // `new RegExp(HL_CLOZE_SRC, 'g')` — shared lastIndex across call sites would corrupt matchAll/replace.
 const HL_CLOZE_SRC = '==((?:[^=]|=(?!=))+)==';
 
-// FSRS-6: weights live in settings (DEFAULT_SETTINGS.fsrs.weights). Helpers
-// below take an `fsrsCtx` so per-call weight edits via the settings tab take
-// effect on the next review.
-// Reference implementation: open-spaced-repetition/ts-fsrs v6.
-const FSRS_DEFAULT_RETENTION = 0.9;
 
 // ============================================================================
 //  Default settings — single source of truth for tunables.
@@ -144,23 +162,6 @@ const DEFAULT_SETTINGS = {
     initial_af_units_divisor: 10,
     extract_bump: 1.05,
   },
-  fsrs: {
-    // FSRS-6 canonical defaults (21 params, w0..w20). w19 = same-day stability
-    // exponent, w20 = learnable decay (drives the power-law forgetting curve).
-    weights: [
-      0.2172, 1.1771, 3.2602, 16.1507,
-      7.0114, 0.57,
-      2.0966, 0.0069,
-      1.5261, 0.112, 1.0178,
-      1.849, 0.1133, 0.3127, 2.2934,
-      0.2191, 3.0004, 0.7536, 0.3332,
-      0.1437, 0.2,
-    ],
-    decay: 0.2,  // fallback only; live value is w[20] when 21 weights are present
-    request_retention: 0.9,
-    fuzz: false,
-    short_term_enabled: true,
-  },
   queue: {
     auto_postpone_threshold: 30,
     auto_postpone_skip_top: 10,
@@ -172,7 +173,11 @@ const DEFAULT_SETTINGS = {
     enabled: true,
     qa_regex: '^Q::\\s*(.+?)\\s*::A::\\s*(.+)$',
     cloze_regex: '\\{\\{c(\\d+)::([^}]+?)(?:::([^}]+?))?\\}\\}',
-    default_deck_tag: 'inline',
+  },
+  spaced_repetition: {
+    flashcardTag: 'flashcards/incremental-reading',
+    multilineCardSeparator: '?',
+    multilineReversedCardSeparator: '??',
   },
   paths: {
     sources: 'Sources/Incremental Reading/Sources',
@@ -180,7 +185,6 @@ const DEFAULT_SETTINGS = {
     cards: 'Sources/Incremental Reading/Cards',
     review_log: 'Sources/Incremental Reading/Review Log.md',
     sioyek: '/Applications/sioyek.app/Contents/MacOS/sioyek',
-    daily_note: 'Calendar',
   },
   misc: {
     debug: false,
@@ -191,21 +195,6 @@ const DEFAULT_SETTINGS = {
   },
 };
 
-// Build an FSRS context from current settings. Pass to every fsrs* helper.
-function fsrsCtx(settings) {
-  const w = settings?.fsrs?.weights || DEFAULT_SETTINGS.fsrs.weights;
-  // FSRS-6: decay is learnable as w[20]. Fall back to the fixed `decay` setting for
-  // legacy 19-weight (FSRS-5) params so existing review history keeps its schedule.
-  const decay = (w.length > 20 && Number.isFinite(w[20]) && w[20] > 0)
-    ? w[20]
-    : (settings?.fsrs?.decay ?? DEFAULT_SETTINGS.fsrs.decay);
-  const factor = Math.pow(0.9, -1 / decay) - 1;  // FSRS-6 forgetting-curve factor
-  const r = settings?.fsrs?.request_retention ?? DEFAULT_SETTINGS.fsrs.request_retention;
-  const fuzz = settings?.fsrs?.fuzz ?? DEFAULT_SETTINGS.fsrs.fuzz;
-  return { w, decay, factor, r, fuzz };
-}
-
-// ============================================================================
 //  Date helpers (vault uses DD-MM-YYYY)
 // ============================================================================
 
@@ -328,78 +317,8 @@ function initialAFactor(settings, { total_pages, total_seconds } = {}) {
 }
 
 // ============================================================================
-//  FSRS-6 core
-// ============================================================================
-
-const clamp = (x, lo, hi) => Math.min(Math.max(x, lo), hi);
 const round4 = (x) => Math.round(x * 10000) / 10000;
 
-function fsrsRetrievability(ctx, elapsedDays, stability) {
-  if (!stability || stability <= 0) return 1.0;
-  const { factor, decay } = ctx;
-  const t = Math.max(0, elapsedDays);
-  return Math.pow(1 + factor * t / stability, -decay);
-}
-
-function fsrsInterval(ctx, stability, r) {
-  const { factor, decay } = ctx;
-  const target = r ?? ctx.r;
-  let days = stability / factor * (Math.pow(target, -1 / decay) - 1);
-  if (ctx.fuzz) {
-    const jitter = (Math.random() * 0.1 - 0.05);  // ±5%
-    days = days * (1 + jitter);
-  }
-  return Math.max(1, Math.round(days));
-}
-
-function fsrsSeedDifficulty(ctx, grade) {
-  const { w } = ctx;
-  // D0(G) = w4 - exp(w5 * (G - 1)) + 1   (FSRS-6)
-  return clamp(w[4] - Math.exp(w[5] * (grade - 1)) + 1, 1, 10);
-}
-
-function fsrsUpdateDifficulty(ctx, d, grade) {
-  const { w } = ctx;
-  // Linear damping then mean reversion toward D0(Easy).
-  const deltaD = -w[6] * (grade - 3);
-  const damped = d + deltaD * (10 - d) / 9;
-  const target = fsrsSeedDifficulty(ctx, 4);
-  const dNew = w[7] * target + (1 - w[7]) * damped;
-  return clamp(dNew, 1, 10);
-}
-
-function fsrsUpdateStabilityRecall(ctx, d, s, r, grade) {
-  const { w } = ctx;
-  const hard = grade === 2 ? w[15] : 1;
-  const easy = grade === 4 ? w[16] : 1;
-  const factor = Math.exp(w[8])
-              * (11 - d)
-              * Math.pow(s, -w[9])
-              * (Math.exp((1 - r) * w[10]) - 1)
-              * hard
-              * easy;
-  return Math.max(0.01, s * (1 + factor));
-}
-
-function fsrsUpdateStabilityLapse(ctx, d, s, r) {
-  const { w } = ctx;
-  const sLapse = w[11]
-              * Math.pow(d, -w[12])
-              * (Math.pow(s + 1, w[13]) - 1)
-              * Math.exp((1 - r) * w[14]);
-  return Math.max(0.01, Math.min(sLapse, s));
-}
-
-function fsrsShortTermStability(ctx, s, grade) {
-  const { w } = ctx;
-  // FSRS-6 same-day stability: exponent on S is the learnable w[19] (was a fixed
-  // 0.5 in FSRS-5). Legacy 19-weight params fall back to 0.5.
-  const sExp = (w.length > 19 && Number.isFinite(w[19])) ? w[19] : 0.5;
-  const sInc = Math.exp(w[17] * (grade - 3 + w[18])) * Math.pow(s, -sExp);
-  return clamp(s * sInc, 0.01, 36500);
-}
-
-// ============================================================================
 //  Link parsing
 // ============================================================================
 
@@ -417,8 +336,7 @@ function linkPointsTo(value, target) {
 
 // ============================================================================
 //  Inline cards — parse Q::A / cloze / {{c1::...}} forms out of a note body.
-//  Each match yields a stable id so FSRS state in inline_cards[] survives
-//  edits elsewhere in the file.
+//  Each match yields a stable id so repeated exports can avoid duplicates.
 // ============================================================================
 
 function inlineCardId(filePath, literal) {
@@ -492,29 +410,6 @@ function parseInlineCards(filePath, body, settings) {
   return out;
 }
 
-async function updateInlineCardState(app, filePath, cardId, mutator) {
-  const file = app.vault.getAbstractFileByPath(filePath);
-  if (!file) return;
-  await app.fileManager.processFrontMatter(file, (fm) => {
-    const idx = (fm.inline_cards || []).findIndex(c => c.id === cardId);
-    if (idx < 0) return;
-    fm.inline_cards[idx] = mutator(fm.inline_cards[idx]);
-  });
-}
-
-// Build the synthetic `type:'card'` frontmatter the review/queue/dashboard code
-// expects from an inline card sub-object `c` of parent note `parentFm` at `parentPath`.
-function inlineCardFm(c, parentFm, parentPath) {
-  return {
-    ...c,
-    type: 'card',
-    status: c.status || 'active',
-    priority: c.priority ?? parentFm?.priority ?? 50,
-    inline_parent: parentPath,
-  };
-}
-
-// ============================================================================
 //  Modal helpers
 // ============================================================================
 
@@ -756,11 +651,11 @@ class OcclusionModal extends Modal {
 
     const buttonRow = contentEl.createDiv({ cls: 'modal-button-container ir-occ-btnrow' });
 
-    const hideOneBtn = buttonRow.createEl('button', { text: 'Generate: Hide-one (N cards)', cls: 'mod-cta' });
+    const hideOneBtn = buttonRow.createEl('button', { text: 'Generate: hide-one (N cards)', cls: 'mod-cta' });
     hideOneBtn.title = 'One card per rect; each card hides exactly that rect, reveals others.';
     hideOneBtn.addEventListener('click', () => this._commit('hide-one'));
 
-    const showOneBtn = buttonRow.createEl('button', { text: 'Generate: Show-one (N cards)' });
+    const showOneBtn = buttonRow.createEl('button', { text: 'Generate: show-one (N cards)' });
     showOneBtn.title = 'One card per rect; each card shows only that rect, hides others.';
     showOneBtn.addEventListener('click', () => this._commit('show-one'));
 
@@ -852,145 +747,6 @@ function askOcclusion(app, imageSrc) {
 }
 
 // ------------------------------------------------------------------
-//  FlashcardModal — single centered window for review.
-//
-//  Stages: 'question' → user clicks Show Answer → 'answer' → user picks grade.
-//  Resolves with grade (1-4) or null on cancel/close.
-//
-//  Renders markdown for question and answer via MarkdownRenderer so cloze
-//  marks, embedded images, callouts, math etc. all paint correctly.
-//  For occlusion cards the question/answer markdown contain the
-//  ir-occlusion code block — the renderer (registered in onload) handles
-//  cover overlays. Pass `hideQuestionAnswerLabels: true` to skip the
-//  "QUESTION:" / "ANSWER:" headers (used for occlusion since the image is
-//  the question).
-// ------------------------------------------------------------------
-class FlashcardModal extends Modal {
-  constructor(app, opts, resolve) {
-    super(app);
-    this.opts = opts;          // { title, sourcePath, questionMd, answerMd, hideLabels }
-    this.resolve = resolve;
-    this._resolved = false;
-    this._renderComponent = new Component();
-  }
-  onOpen() {
-    const { contentEl, modalEl, titleEl } = this;
-    titleEl.setText(this.opts.title || 'Review');
-
-    // Make the modal nice and roomy
-    modalEl.addClass('ir-fc-modal-el');
-
-    contentEl.empty();
-    contentEl.addClass('ir-fc-modal');
-
-    if (!this.opts.hideLabels) {
-      contentEl.createEl('div', { cls: 'ir-fc-label', text: 'Question' });
-    }
-
-    const qBox = contentEl.createDiv({ cls: 'ir-fc-question ir-fc-box markdown-rendered' });
-    this._renderMd(qBox, this.opts.questionMd || '');
-
-    this.aLabel = null;
-    this.aBox = contentEl.createDiv({ cls: 'ir-fc-answer ir-fc-box ir-fc-answer-box markdown-rendered ir-hidden' });
-
-    const btnRow = contentEl.createDiv({ cls: 'ir-fc-btn-row' });
-    this.btnRow = btnRow;
-
-    if (this.opts.directGrade) {
-      // For occlusion: in-card Show Answer drives reveal; modal jumps straight
-      // to grading. We still call _reveal() to set up the grade buttons but
-      // pass an empty answer so it doesn't paint a duplicate block.
-      this.opts.answerMd = '';
-      this._reveal();
-    } else {
-      this.showBtn = btnRow.createEl('button', { text: 'Show Answer (Space)', cls: 'mod-cta ir-fc-show-btn' });
-      this.showBtn.addEventListener('click', () => this._reveal());
-      window.setTimeout(() => this.showBtn.focus(), 30);
-    }
-
-    this._keyHandler = (e) => {
-      if (this._resolved) return;
-      if (this.stage === 'question') {
-        if (e.key === ' ' || e.key === 'Enter') {
-          e.preventDefault();
-          this._reveal();
-        }
-      } else if (this.stage === 'answer') {
-        if (e.key >= '1' && e.key <= '4') {
-          e.preventDefault();
-          this._grade(parseInt(e.key, 10));
-        }
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        this._cancel();
-      }
-    };
-    contentEl.addEventListener('keydown', this._keyHandler);
-    this.stage = 'question';
-  }
-  _renderMd(target, md) {
-    target.empty();
-    if (MarkdownRenderer?.render) {
-      MarkdownRenderer.render(this.app, md, target, this.opts.sourcePath || '', this._renderComponent);
-    } else {
-      target.setText(md);
-    }
-  }
-  _reveal() {
-    if (this.stage !== 'question') return;
-    this.stage = 'answer';
-    const hasAnswer = !!(this.opts.answerMd && this.opts.answerMd.trim());
-    if (hasAnswer) {
-      if (!this.opts.hideLabels) {
-        this.aLabel = this.contentEl.createEl('div', { cls: 'ir-fc-label ir-fc-label-answer', text: 'Answer' });
-        this.contentEl.insertBefore(this.aLabel, this.aBox);
-      }
-      this.aBox.removeClass('ir-hidden');
-      this._renderMd(this.aBox, this.opts.answerMd);
-    }
-    this.btnRow.empty();
-    const grades = [
-      { n: 1, label: 'Again', sub: '1', cls: 'ir-fc-grade-1' },
-      { n: 2, label: 'Hard',  sub: '2', cls: 'ir-fc-grade-2' },
-      { n: 3, label: 'Good',  sub: '3', cls: 'ir-fc-grade-3 mod-cta' },
-      { n: 4, label: 'Easy',  sub: '4', cls: 'ir-fc-grade-4' },
-    ];
-    for (const g of grades) {
-      const b = this.btnRow.createEl('button', { cls: `${g.cls} ir-fc-grade-btn` });
-      b.createDiv({ cls: 'ir-fc-grade-label', text: g.label });
-      b.createDiv({ cls: 'ir-fc-grade-key', text: `(${g.sub})` });
-      b.addEventListener('click', () => this._grade(g.n));
-    }
-    window.setTimeout(() => this.btnRow.querySelector('.mod-cta')?.focus(), 30);
-  }
-  _grade(n) {
-    if (this._resolved) return;
-    this._resolved = true;
-    this.close();
-    this.resolve(n);
-  }
-  _cancel() {
-    if (this._resolved) return;
-    this._resolved = true;
-    this.close();
-    this.resolve(null);
-  }
-  onClose() {
-    if (this._keyHandler) this.contentEl.removeEventListener('keydown', this._keyHandler);
-    this._renderComponent.unload();
-    this.contentEl.empty();
-    if (!this._resolved) {
-      this._resolved = true;
-      this.resolve(null);
-    }
-  }
-}
-
-function reviewCard(app, opts) {
-  return new Promise((res) => new FlashcardModal(app, opts, res).open());
-}
-
 function askText(app, title, defaultValue = '') {
   return new Promise((res) => new TextPromptModal(app, title, defaultValue, res).open());
 }
@@ -1020,18 +776,33 @@ async function pickFromList(app, displays, values, placeholder = '') {
 
 function vaultAbsPath(app, relPath) {
   const adapter = app.vault.adapter;
-  const base = adapter.basePath || adapter.getBasePath?.();
-  if (!base) return null;
-  const sep = base.endsWith('/') ? '' : '/';
-  return base + sep + relPath;
+  if (!(adapter instanceof FileSystemAdapter)) return null;
+  if (relPath) return adapter.getFullPath(normalizePath(relPath));
+  const base = adapter.getBasePath();
+  return base.endsWith('/') ? base : base + '/';
 }
 
 function getFm(app, file) {
   return file ? app.metadataCache.getFileCache(file)?.frontmatter : null;
 }
 
-function getAllIRFiles(app) {
-  return app.vault.getMarkdownFiles().filter(f => f.path.startsWith(ROOT + '/'));
+function configuredPath(settings, key, fallback) {
+  const value = String(settings?.paths?.[key] || fallback).trim();
+  return normalizePath(value);
+}
+
+function pathIsInside(filePath, folderPath) {
+  return filePath === folderPath || filePath.startsWith(folderPath + '/');
+}
+
+function getAllIRFiles(app, settings) {
+  const folders = [
+    configuredPath(settings, 'sources', SOURCES_FOLDER),
+    configuredPath(settings, 'extracts', EXTRACTS_FOLDER),
+    configuredPath(settings, 'cards', CARDS_FOLDER),
+    CATEGORIES_FOLDER,
+  ];
+  return app.vault.getMarkdownFiles().filter(f => folders.some(folder => pathIsInside(f.path, folder)));
 }
 
 function getEditorForFile(app, file) {
@@ -1097,7 +868,7 @@ async function resolveSourceFromActive(app) {
   if (active.extension === 'md') {
     const fm = getFm(app, active);
     if (fm?.type === 'source') return { tfile: active, fm };
-    new Notice('Active note is not an IR source.');
+    new Notice('Active note is not an incremental reading source.');
     return null;
   }
 
@@ -1184,12 +955,12 @@ async function resolveSourceOrExtractFromActive(app) {
       }
       return { tfile: parentTf, fm: parentFm };
     }
-    new Notice('Active note is not an IR source/extract/card.');
+    new Notice('Active note is not an incremental reading source, extract, or card.');
     return null;
   }
 
   if (active.extension === 'pdf') return await resolveSourceFromActive(app);
-  new Notice('Active file must be an IR element or PDF.');
+  new Notice('Active file must be an incremental reading element or PDF.');
   return null;
 }
 
@@ -1210,7 +981,7 @@ async function resolveIRFromActive(app, { allowCard = true, allowPdfFallback = t
   if (active.extension === 'pdf' && allowPdfFallback) {
     return await resolveSourceFromActive(app);
   }
-  new Notice('Active file must be an IR element (or linked PDF).');
+  new Notice('Active file must be an incremental reading element or linked PDF.');
   return null;
 }
 
@@ -1284,18 +1055,18 @@ class IRQueueView extends ItemView {
     this.plugin = plugin;
     this.filter = plugin.settings.queue.default_tag_filter || '';
     this.refreshTimer = null;
+    this.modifyTimer = null;
   }
 
   getViewType() { return IR_QUEUE_VIEW_TYPE; }
-  getDisplayText() { return 'IR Queue'; }
+  getDisplayText() { return 'Reading queue'; }
   getIcon() { return 'list-checks'; }
 
   async onOpen() {
     this._render();
-    let modifyTimer = null;
     this.registerEvent(this.plugin.app.vault.on('modify', () => {
-      if (modifyTimer) window.clearTimeout(modifyTimer);
-      modifyTimer = window.setTimeout(() => this._render(), 250);
+      if (this.modifyTimer) window.clearTimeout(this.modifyTimer);
+      this.modifyTimer = window.setTimeout(() => this._render(), 250);
     }));
     this.registerEvent(this.plugin.app.workspace.on('active-leaf-change', () => this._render()));
     this.refreshTimer = window.setInterval(() => this._render(), 30000);
@@ -1303,6 +1074,7 @@ class IRQueueView extends ItemView {
 
   async onClose() {
     if (this.refreshTimer) window.clearInterval(this.refreshTimer);
+    if (this.modifyTimer) window.clearTimeout(this.modifyTimer);
   }
 
   _render() {
@@ -1310,7 +1082,7 @@ class IRQueueView extends ItemView {
     root.empty();
     root.addClass('ir-queue-root');
 
-    root.createDiv({ cls: 'ir-queue-header', text: 'IR Queue' });
+    root.createDiv({ cls: 'ir-queue-header', text: 'Reading queue' });
 
     const filterInput = root.createEl('input', {
       cls: 'ir-queue-filter',
@@ -1346,15 +1118,12 @@ class IRQueueView extends ItemView {
     // Only exclude files that are themselves session entries (topics/file-cards) from
     // the supplementary groups — not parents merely hosting a session inline card.
     const sessionPaths = new Set(session.filter(s => !s.fm?.inline_parent).map(s => s.tfile.path));
-    // Inline cards are now first-class in the session/queue, so track which ones are
-    // already shown there to avoid double-listing them in the inline section below.
-    const sessionInlineIds = new Set(session.filter(s => s.fm?.inline_parent).map(s => s.fm.id));
     const groups = { overdue: [], newItems: [], active: [] };
-    for (const file of getAllIRFiles(this.plugin.app)) {
+    for (const file of getAllIRFiles(this.plugin.app, this.plugin.settings)) {
       if (sessionPaths.has(file.path)) continue;
       const cache = this.plugin.app.metadataCache.getFileCache(file);
       const fm = cache?.frontmatter;
-      if (!isActiveIR(fm)) continue;
+      if (!isActiveIR(fm) || fm.type === 'card') continue;
       if (this._filterMiss(cache, file)) continue;
       const row = { tfile: file, file, fm };
       if (fm.status === 'pending' || fm.status === 'inbox') groups.newItems.push(row);
@@ -1379,37 +1148,11 @@ class IRQueueView extends ItemView {
     groups.newItems.sort(sortFn);
     groups.active.sort(sortFn);
 
-    // 5. Inline cards section — keep existing per-card scan, render under its own header.
-    const inlineRows = [];
-    if (this.plugin.settings.inline_cards.enabled) {
-      for (const file of getAllIRFiles(this.plugin.app)) {
-        const cache = this.plugin.app.metadataCache.getFileCache(file);
-        const fm = cache?.frontmatter;
-        if (!isActiveIR(fm) || (fm.type !== 'source' && fm.type !== 'extract')) continue;
-        if (this._filterMiss(cache, file)) continue;
-        const cards = fm.inline_cards || [];
-        for (const c of cards) {
-          if (c.status === 'done' || c.status === 'dismissed') continue;
-          if (sessionInlineIds.has(c.id)) continue;  // already shown in Today's Session
-          const synthetic = {
-            file,
-            tfile: file,
-            fm: inlineCardFm(c, fm, file.path),
-          };
-          if (!c.next_review) inlineRows.push(synthetic);
-          else if (isPastDue(synthetic.fm, today)) inlineRows.push(synthetic);
-          else if (isDue(synthetic.fm, today)) inlineRows.push(synthetic);
-        }
-      }
-      inlineRows.sort(sortFn);
-    }
-
-    // 6. Render in dashboard-like order.
+    // 5. Render reading topics. Card queues belong to Spaced Repetition.
     this._renderSection(root, "Today's Session", sessionFiltered);
     this._renderSection(root, 'Overdue (not in session)', groups.overdue);
     this._renderSection(root, 'New', groups.newItems);
     this._renderSection(root, 'Active (no due)', groups.active);
-    if (inlineRows.length) this._renderSection(root, 'Inline cards (due)', inlineRows);
   }
 
   _filterMiss(cache, file) {
@@ -1441,7 +1184,7 @@ class IRQueueView extends ItemView {
     }
     const leaf = this.plugin.app.workspace.getLeaf(false);
     await leaf.openFile(r.file);
-    this.plugin.app.commands.executeCommandById('ir-toolkit:jump-to-read-point');
+    this.plugin.app.commands.executeCommandById('incremental-reading:jump-to-read-point');
   }
 
   _renderTimeline(root) {
@@ -1479,7 +1222,7 @@ class IRQueueView extends ItemView {
 //  Settings Tab
 // ============================================================================
 
-class IRToolkitSettingTab extends PluginSettingTab {
+class IncrementalReadingSettingTab extends PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -1488,18 +1231,16 @@ class IRToolkitSettingTab extends PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl('h2', { text: 'IR Toolkit Settings' });
     this._scheduling(containerEl);
-    this._fsrs(containerEl);
     this._queue(containerEl);
     this._inlineCards(containerEl);
+    this._spacedRepetition(containerEl);
     this._paths(containerEl);
     this._misc(containerEl);
   }
 
   _scheduling(root) {
     const sec = root.createDiv({ cls: 'ir-settings-section' });
-    sec.createEl('h3', { text: 'Scheduling' });
     const s = this.plugin.settings.scheduling;
     const save = () => this.plugin.saveSettings();
 
@@ -1536,46 +1277,9 @@ class IRToolkitSettingTab extends PluginSettingTab {
       .addText(t => t.setValue(String(s.extract_bump)).onChange(v => { s.extract_bump = Number(v) || 1.05; save(); }));
   }
 
-  _fsrs(root) {
-    const sec = root.createDiv({ cls: 'ir-settings-section' });
-    sec.createEl('h3', { text: 'FSRS' });
-    const s = this.plugin.settings.fsrs;
-    const save = () => this.plugin.saveSettings();
-
-    new Setting(sec)
-      .setName('Weights (19 values)')
-      .setDesc('JSON array, FSRS-6 canonical order w0..w20 (21 params; w20 = decay).')
-      .addTextArea(t => {
-        t.setValue(JSON.stringify(s.weights));
-        t.inputEl.rows = 4;
-        t.inputEl.addClass('ir-fullwidth');
-        t.onChange(v => {
-          try {
-            const arr = JSON.parse(v);
-            if (Array.isArray(arr) && arr.length === 19 && arr.every(x => Number.isFinite(x))) {
-              s.weights = arr;
-              save();
-            }
-          } catch (_) { /* ignore until valid JSON */ }
-        });
-      });
-
-    new Setting(sec).setName('Decay (w20)').setDesc('Personalized forgetting-curve decay. 0.1–0.8 typical.')
-      .addText(t => t.setValue(String(s.decay)).onChange(v => { s.decay = Number(v) || 0.5; save(); }));
-
-    new Setting(sec).setName('Request retention').setDesc('Target retention used to pick the next interval.')
-      .addText(t => t.setValue(String(s.request_retention)).onChange(v => { s.request_retention = Number(v) || 0.9; save(); }));
-
-    new Setting(sec).setName('Fuzz interval').setDesc('Randomize next interval ±5%.')
-      .addToggle(t => t.setValue(s.fuzz).onChange(v => { s.fuzz = v; save(); }));
-
-    new Setting(sec).setName('Same-day short-term path').setDesc('Use FSRS-6 short-term stability when re-reviewing within the same day.')
-      .addToggle(t => t.setValue(s.short_term_enabled).onChange(v => { s.short_term_enabled = v; save(); }));
-  }
-
   _queue(root) {
     const sec = root.createDiv({ cls: 'ir-settings-section' });
-    sec.createEl('h3', { text: 'Queue' });
+    new Setting(sec).setName('Queue').setHeading();
     const s = this.plugin.settings.queue;
     const save = () => this.plugin.saveSettings();
     new Setting(sec).setName('Auto-postpone threshold')
@@ -1594,7 +1298,7 @@ class IRToolkitSettingTab extends PluginSettingTab {
 
   _inlineCards(root) {
     const sec = root.createDiv({ cls: 'ir-settings-section' });
-    sec.createEl('h3', { text: 'Inline cards' });
+    new Setting(sec).setName('Inline card export').setHeading();
     const s = this.plugin.settings.inline_cards;
     const save = () => this.plugin.saveSettings();
     new Setting(sec).setName('Enabled')
@@ -1603,24 +1307,57 @@ class IRToolkitSettingTab extends PluginSettingTab {
       .addText(t => t.setValue(s.qa_regex).onChange(v => { s.qa_regex = v; save(); }));
     new Setting(sec).setName('Cloze regex')
       .addText(t => t.setValue(s.cloze_regex).onChange(v => { s.cloze_regex = v; save(); }));
-    new Setting(sec).setName('Default deck tag')
-      .addText(t => t.setValue(s.default_deck_tag).onChange(v => { s.default_deck_tag = v; save(); }));
+  }
+
+  _spacedRepetition(root) {
+    const sec = root.createDiv({ cls: 'ir-settings-section' });
+    new Setting(sec).setName('Spaced Repetition').setHeading();
+    const s = this.plugin.settings.spaced_repetition;
+    const save = () => this.plugin.saveSettings();
+    new Setting(sec)
+      .setName('Flashcard deck tag')
+      .setDesc('Match a flashcard tag configured in Spaced Repetition. Do not include the leading #.')
+      .addText(t => t.setValue(s.flashcardTag).onChange(v => {
+        s.flashcardTag = v.replace(/^#/, '').trim() || 'flashcards/incremental-reading';
+        save();
+      }));
+    new Setting(sec)
+      .setName('Multiline card separator')
+      .setDesc('Match the multiline separator configured in Spaced Repetition.')
+      .addText(t => t.setValue(s.multilineCardSeparator).onChange(v => {
+        s.multilineCardSeparator = v.trim() || '?';
+        save();
+      }));
+    new Setting(sec)
+      .setName('Bidirectional card separator')
+      .setDesc('Match the multiline reversed separator configured in Spaced Repetition.')
+      .addText(t => t.setValue(s.multilineReversedCardSeparator).onChange(v => {
+        s.multilineReversedCardSeparator = v.trim() || '??';
+        save();
+      }));
   }
 
   _paths(root) {
     const sec = root.createDiv({ cls: 'ir-settings-section' });
-    sec.createEl('h3', { text: 'Paths' });
+    new Setting(sec).setName('Paths').setHeading();
     const s = this.plugin.settings.paths;
     const save = () => this.plugin.saveSettings();
-    for (const key of ['sources', 'extracts', 'cards', 'review_log', 'sioyek', 'daily_note']) {
-      new Setting(sec).setName(key)
+    const paths = [
+      ['sources', 'Sources folder'],
+      ['extracts', 'Extracts folder'],
+      ['cards', 'Cards folder'],
+      ['review_log', 'Review log file'],
+      ['sioyek', 'Sioyek executable'],
+    ];
+    for (const [key, name] of paths) {
+      new Setting(sec).setName(name)
         .addText(t => t.setValue(s[key]).onChange(v => { s[key] = v; save(); }));
     }
   }
 
   _misc(root) {
     const sec = root.createDiv({ cls: 'ir-settings-section' });
-    sec.createEl('h3', { text: 'Misc' });
+    new Setting(sec).setName('Advanced').setHeading();
     const s = this.plugin.settings.misc;
     const save = () => this.plugin.saveSettings();
     new Setting(sec).setName('Debug logging')
@@ -1642,21 +1379,23 @@ class KnowledgeTreeView extends ItemView {
     this.filter = '';
     this._match = null;
     this.index = null;
+    this.refreshTimer = null;
   }
 
   getViewType() { return this.mode === 'sidebar' ? KNOWLEDGE_TREE_SIDEBAR_TYPE : KNOWLEDGE_TREE_VIEW_TYPE; }
-  getDisplayText() { return 'Knowledge Tree'; }
+  getDisplayText() { return 'Knowledge tree'; }
   getIcon() { return 'folder-tree'; }
 
   async onOpen() {
     this._render();
-    let t = null;
     this.registerEvent(this.plugin.app.metadataCache.on('changed', () => {
-      if (t) window.clearTimeout(t);
-      t = window.setTimeout(() => this._renderBody(), 300);
+      if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+      this.refreshTimer = window.setTimeout(() => this._renderBody(), 300);
     }));
   }
-  async onClose() {}
+  async onClose() {
+    if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+  }
 
   // Full render: rebuilds toolbar + body. Used on open and cross-view refresh.
   // Internal updates (filter typing, expand, drag, edits) call _renderBody only, so
@@ -1801,7 +1540,7 @@ class KnowledgeTreeView extends ItemView {
     const leaf = this.plugin.app.workspace.getLeaf(false);
     await leaf.openFile(page.tfile);
     if (page.fm.type === 'source' || page.fm.type === 'extract') {
-      this.plugin.app.commands.executeCommandById('ir-toolkit:jump-to-read-point');
+      this.plugin.app.commands.executeCommandById('incremental-reading:jump-to-read-point');
     }
   }
 
@@ -1841,14 +1580,14 @@ class KnowledgeTreeView extends ItemView {
   }
 }
 
-class IRToolkit extends Plugin {
+class IncrementalReadingPlugin extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       this.settings[key] = Object.assign({}, DEFAULT_SETTINGS[key], this.settings[key] || {});
     }
     await this.saveData(this.settings);
-    this.addSettingTab(new IRToolkitSettingTab(this.app, this));
+    this.addSettingTab(new IncrementalReadingSettingTab(this.app, this));
     this.registerView(IR_QUEUE_VIEW_TYPE, leaf => new IRQueueView(leaf, this));
     this.registerView(KNOWLEDGE_TREE_VIEW_TYPE, leaf => new KnowledgeTreeView(leaf, this, 'main'));
     this.registerView(KNOWLEDGE_TREE_SIDEBAR_TYPE, leaf => new KnowledgeTreeView(leaf, this, 'sidebar'));
@@ -1903,7 +1642,7 @@ class IRToolkit extends Plugin {
       });
 
       const btnRow = el.createDiv({ cls: 'ir-occ-btn-row' });
-      const btn = btnRow.createEl('button', { text: 'Show Answer' });
+      const btn = btnRow.createEl('button', { text: 'Show answer' });
       let revealed = false;
       btn.addEventListener('click', () => {
         revealed = !revealed;
@@ -1921,7 +1660,9 @@ class IRToolkit extends Plugin {
     cmd('dismiss',            'Dismiss',                         () => this.dismiss());
     cmd('postpone',           'Postpone',                        () => this.postpone());
     cmd('schedule',           'Schedule (manual date)',          () => this.schedule());
-    cmd('forget-card',        'Forget card (reset FSRS)',        () => this.forgetCard());
+    cmd('review-cards',       'Review cards (Spaced Repetition)', () => this.reviewCards());
+    cmd('review-cards-in-note','Review cards in current note (Spaced Repetition)', () => this.reviewCardsInNote());
+    cmd('migrate-cards-to-spaced-repetition', 'Migrate legacy cards to Spaced Repetition', () => this.migrateLegacyCards());
 
     // Element creation
     cmd('extract-selection',  'Extract selection',               () => this.extractSelection());
@@ -1956,13 +1697,164 @@ class IRToolkit extends Plugin {
     cmd('split-book',         'Split book into chapters',        () => this.splitBook());
 
     // Sidebar + checkpoints
-    cmd('open-ir-queue',  'Open IR queue sidebar',  () => this._activateQueueView());
+    cmd('open-reading-queue',  'Open reading queue sidebar',  () => this._activateQueueView());
     cmd('open-knowledge-tree',         'Open knowledge tree',           () => this._activateKnowledgeTree());
     cmd('open-knowledge-tree-sidebar', 'Open knowledge tree (sidebar)', () => this._activateKnowledgeTreeSidebar());
     cmd('new-category',                'New category',                  async () => { await this.createCategory(); this._refreshTreeViews(); });
     cmd('tree-reparent-active',        'Move active element under…',    async () => { await this.reparentActive(); this._refreshTreeViews(); });
     cmd('checkpoint',     'Add timeline checkpoint', () => this.addCheckpoint());
-    cmd('seed-inline-cards', 'Seed inline cards from current file body', () => this.seedInlineCards());
+    cmd('seed-inline-cards', 'Export inline cards to Spaced Repetition', () => this.seedInlineCards());
+    this.app.workspace.onLayoutReady(() => {
+      const count = this._legacyCardFiles().length;
+      if (count) new Notice(`Incremental Reading: ${count} legacy card${count === 1 ? '' : 's'} found. Run "Migrate legacy cards to Spaced Repetition".`, 10000);
+    });
+  }
+
+  sourcesFolder() { return configuredPath(this.settings, 'sources', SOURCES_FOLDER); }
+  extractsFolder() { return configuredPath(this.settings, 'extracts', EXTRACTS_FOLDER); }
+  cardsFolder() { return configuredPath(this.settings, 'cards', CARDS_FOLDER); }
+  reviewLogPath() { return configuredPath(this.settings, 'review_log', REVIEW_LOG_PATH); }
+
+  _nativeCardText(value) {
+    return spacedRepetitionCore.nativeCardText(value);
+  }
+
+  _spacedRepetitionSettings() {
+    return this.settings.spaced_repetition || DEFAULT_SETTINGS.spaced_repetition;
+  }
+
+  _spacedRepetitionDeckTag() {
+    const configured = this._spacedRepetitionSettings().flashcardTag;
+    return String(configured || 'flashcards/incremental-reading').replace(/^#/, '').replace(/\/+$/, '');
+  }
+
+  _spacedRepetitionBody(format, question, answer) {
+    return spacedRepetitionCore.spacedRepetitionBody(
+      format,
+      question,
+      answer,
+      this._spacedRepetitionSettings()
+    );
+  }
+
+  async _createSpacedRepetitionCard(parentFile, { format, question, answer = '', extraFrontmatter = [] }) {
+    const folder = this.cardsFolder();
+    await ensureFolder(this.app, folder);
+    const parentTitle = parentFile.basename;
+    const safeParent = slugifyForFolder(parentTitle) || 'Untitled';
+    const existing = this.app.vault.getMarkdownFiles().filter(f =>
+      pathIsInside(f.path, folder) && f.basename.startsWith(safeParent + ' - Card')
+    );
+    let cardNum = existing.length + 1;
+    let name = `${safeParent} - Card ${cardNum}`;
+    while (this.app.vault.getAbstractFileByPath(`${folder}/${name}.md`)) {
+      name = `${safeParent} - Card ${++cardNum}`;
+    }
+    const fm = [
+      '---',
+      'type: card',
+      `source: ${JSON.stringify(`[[${parentTitle}]]`)}`,
+      `date_added: ${todayDMY()}`,
+      `card_format: ${format}`,
+      'ir_spaced_repetition: true',
+      ...extraFrontmatter,
+      'tags:',
+      '  - incremental-reading',
+      '  - ir/card',
+      `  - ${this._spacedRepetitionDeckTag()}`,
+      '---',
+      '',
+    ];
+    const file = await this.app.vault.create(
+      `${folder}/${name}.md`,
+      fm.join('\n') + this._spacedRepetitionBody(format, question, answer)
+    );
+    return { file, name };
+  }
+
+  _legacyCardFiles() {
+    return this.app.vault.getMarkdownFiles().filter(file => {
+      if (!pathIsInside(file.path, this.cardsFolder())) return false;
+      const fm = getFm(this.app, file);
+      const tags = Array.isArray(fm?.tags)
+        ? fm.tags.map(String)
+        : (typeof fm?.tags === 'string' ? fm.tags.split(/[\s,]+/).filter(Boolean) : []);
+      const deckTag = this._spacedRepetitionDeckTag();
+      return fm?.type === 'card' && fm.ir_spaced_repetition !== true
+        && !tags.some(tag => tag.replace(/^#/, '') === deckTag);
+    });
+  }
+
+  async migrateLegacyCards() {
+    const files = this._legacyCardFiles();
+    if (!files.length) { new Notice('No legacy IR cards to migrate.'); return; }
+    const ok = await confirmDialog(
+      this.app,
+      `Migrate ${files.length} legacy card${files.length === 1 ? '' : 's'}?`,
+      'Card content will be converted to Spaced Repetition syntax. IR scheduling fields will be removed.'
+    );
+    if (!ok) return;
+
+    let migrated = 0, skipped = 0;
+    for (const file of files) {
+      const fm = getFm(this.app, file) || {};
+      const content = await this.app.vault.read(file);
+      const body = content.slice(frontmatterEndOffset(content))
+        .replace(/^\s*<div style="height: 90vh;"><\/div>\s*/, '')
+        .replace(BODY_MARKER, '')
+        .trim();
+      let format = fm.card_format || 'basic';
+      let question = body, answer = '';
+
+      if (format === 'occlusion') {
+        answer = fm.occlusion_image ? `![[${fm.occlusion_image}]]` : '';
+      } else if (format === 'cloze') {
+        const selected = Math.max(1, Number(fm.cloze_index) || 1);
+        let index = 0;
+        question = body.replace(new RegExp(HL_CLOZE_SRC, 'g'), (match, text) => {
+          index++;
+          return index === selected ? match : text;
+        });
+      } else {
+        const marker = /\n> \[!answer\]- Answer\s*\n/;
+        const parts = body.split(marker);
+        if (parts.length < 2) { skipped++; continue; }
+        question = parts.shift().trim();
+        answer = parts.join('\n').split('\n').map(line => line.replace(/^> ?/, '')).join('\n').trim();
+        format = 'basic';
+      }
+
+      await this.app.fileManager.processFrontMatter(file, (next) => {
+        if (typeof next.tags === 'string') next.tags = next.tags.split(/[\s,]+/).filter(Boolean);
+        if (!Array.isArray(next.tags)) next.tags = [];
+        for (const tag of ['incremental-reading', 'ir/card', this._spacedRepetitionDeckTag()]) {
+          if (!next.tags.includes(tag)) next.tags.push(tag);
+        }
+        next.ir_spaced_repetition = true;
+        next.card_format = format;
+        for (const key of [
+          'status', 'priority', 'next_review', 'interval', 'review_count', 'last_reviewed',
+          'last_grade', 'last_retrievability', 'stability', 'difficulty', 'cssclasses',
+        ]) delete next[key];
+      });
+      await this.app.vault.process(file, (current) =>
+        current.slice(0, frontmatterEndOffset(current)) + this._spacedRepetitionBody(format, question, answer)
+      );
+      migrated++;
+    }
+    new Notice(`Migrated ${migrated} card${migrated === 1 ? '' : 's'} to Spaced Repetition${skipped ? `; skipped ${skipped}` : ''}.`);
+  }
+
+  reviewCards() {
+    if (!this.app.commands.executeCommandById(SPACED_REPETITION_REVIEW_COMMAND)) {
+      new Notice('Spaced Repetition is still starting. Reload Obsidian and try again.');
+    }
+  }
+
+  reviewCardsInNote() {
+    if (!this.app.commands.executeCommandById(SPACED_REPETITION_NOTE_COMMAND)) {
+      new Notice('Open a card note, then try again after Spaced Repetition has initialized.');
+    }
   }
 
   async saveSettings() {
@@ -1972,7 +1864,7 @@ class IRToolkit extends Plugin {
   // Debug logging — silent unless the user enables it in settings. Keeps the
   // default console clean (Obsidian guideline: only errors by default).
   _dbg(...args) {
-    if (this.settings?.misc?.debug) console.log('[IR Toolkit]', ...args);
+    if (this.settings?.misc?.debug) console.log('[Incremental Reading]', ...args);
   }
 
   // ---- Next / Random -----------------------------------------------------
@@ -1981,41 +1873,14 @@ class IRToolkit extends Plugin {
     const today = todayDate();
     const active = this.app.workspace.getActiveFile();
     const out = [];
-    for (const f of getAllIRFiles(this.app)) {
+    for (const f of getAllIRFiles(this.app, this.settings)) {
       if (skipCurrent && active && f.path === active.path) continue;
       const fm = getFm(this.app, f);
-      if (!isActiveIR(fm)) continue;
+      if (!isActiveIR(fm) || fm.type === 'card') continue;
       if (!isDue(fm, today)) continue;
       out.push({ tfile: f, fm });
     }
-    // Inline cards live in `inline_cards[]` with no file of their own. Surface due
-    // ones as synthetic `type:'card'` entries (tfile = parent) so the interleaved
-    // queue, Next Element and Random Due treat them like any other card.
-    if (this.settings.inline_cards.enabled) {
-      for (const f of getAllIRFiles(this.app)) {
-        const fm = getFm(this.app, f);
-        if (!isActiveIR(fm) || (fm.type !== 'source' && fm.type !== 'extract')) continue;
-        for (const c of (fm.inline_cards || [])) {
-          if (c.status === 'done' || c.status === 'dismissed') continue;
-          const cardFm = inlineCardFm(c, fm, f.path);
-          if (!isDue(cardFm, today)) continue;
-          out.push({ tfile: f, fm: cardFm });
-        }
-      }
-    }
     return out;
-  }
-
-  // Dashboard reads `card_ratio` from its own frontmatter (SM-canon items:topics
-  // ratio, default 5 cards per 1 topic). The plugin's Next Element interleaves
-  // identically so the picker order matches what the dashboard's "Today's
-  // Session" table displays as #1, #2, #3…
-  getCardRatio() {
-    const dash = this.app.vault.getAbstractFileByPath(DASHBOARD_PATH);
-    if (!dash) return 5;
-    const fm = this.app.metadataCache.getFileCache(dash)?.frontmatter;
-    const v = Number(fm?.card_ratio);
-    return Number.isFinite(v) && v > 0 ? Math.round(v) : 5;
   }
 
   // Read the dashboard's session snapshot (path list persisted as
@@ -2035,24 +1900,7 @@ class IRToolkit extends Plugin {
     for (const p of paths) {
       if (seen.has(p)) continue;   // drop duplicate snapshot keys
       seen.add(p);
-      if (typeof p === 'string' && p.includes('::card::')) {
-        const sep = p.indexOf('::card::');
-        const parentPath = p.slice(0, sep);
-        const cardId = p.slice(sep + '::card::'.length);
-        const tf = this.app.vault.getAbstractFileByPath(parentPath);
-        if (!tf) continue;
-        const pfm = getFm(this.app, tf);
-        const c = (pfm?.inline_cards || []).find(x => x.id === cardId);
-        if (!c || c.status === 'done' || c.status === 'dismissed') continue;
-        if (c.last_reviewed === todayStr) continue;
-        const cardFm = inlineCardFm(c, pfm, parentPath);
-        // Gate on isDue so stale snapshot entries (graded → future, or postponed)
-        // can't inflate the "items left" count. Without this the snapshot keeps
-        // not-due rows it once held, and the count oscillates as it churns.
-        if (!isDue(cardFm, today)) continue;
-        out.push({ tfile: tf, fm: cardFm });
-        continue;
-      }
+      if (typeof p === 'string' && p.includes('::card::')) continue;
       const tf = this.app.vault.getAbstractFileByPath(p);
       if (!tf) continue;
       const f = getFm(this.app, tf);
@@ -2067,11 +1915,7 @@ class IRToolkit extends Plugin {
   async persistSessionSnapshot(queue) {
     const dash = this.app.vault.getAbstractFileByPath(DASHBOARD_PATH);
     if (!dash) return;
-    // Inline cards share their parent's path, so encode them as `parent::card::id`
-    // to preserve identity across reload; plain file entries stay as bare paths.
-    const paths = queue
-      .map(q => q.fm?.inline_parent ? `${q.fm.inline_parent}::card::${q.fm.id}` : q.tfile?.path)
-      .filter(Boolean);
+    const paths = queue.map(q => q.tfile?.path).filter(Boolean);
     if (!paths.length) return;
     try {
       await this.app.fileManager.processFrontMatter(dash, (fm) => {
@@ -2084,29 +1928,14 @@ class IRToolkit extends Plugin {
   }
 
   buildInterleavedQueue(pool, today) {
-    const topics = pool.filter(p => p.fm.type !== 'card')
-      .sort((a, b) => urgency(b.fm, today) - urgency(a.fm, today));
-    const cards = pool.filter(p => p.fm.type === 'card')
-      .sort((a, b) => urgency(b.fm, today) - urgency(a.fm, today));
-    const ratio = this.getCardRatio();
-    const queue = [];
-    let ti = 0, ci = 0;
-    while (ti < topics.length || ci < cards.length) {
-      if (ti < topics.length) queue.push(topics[ti++]);
-      const take = Math.min(ratio, cards.length - ci);
-      for (let k = 0; k < take; k++) queue.push(cards[ci++]);
-      if (ti >= topics.length && take === 0) break;
-    }
-    return queue;
+    return pool.slice().sort((a, b) => urgency(b.fm, today) - urgency(a.fm, today));
   }
 
   async nextElement() {
     const active = this.app.workspace.getActiveFile();
     let queue = this.readSessionSnapshot();
     if (queue && queue.length) {
-      // Drop the currently-open file so Next advances, but keep inline cards even
-      // when their parent is the active file — they grade in place, not by opening.
-      queue = queue.filter(p => p.fm?.inline_parent || !active || p.tfile.path !== active.path);
+      queue = queue.filter(p => !active || p.tfile.path !== active.path);
     } else {
       const pool = this.buildDuePool();
       if (pool.length === 0) { new Notice('✨ Nothing due. Caught up.'); return; }
@@ -2116,215 +1945,50 @@ class IRToolkit extends Plugin {
     }
     if (!queue || queue.length === 0) { new Notice('✨ Caught up.'); return; }
 
-    // Inline cards have no file to open + grade via hotkey, so grade any that sit at
-    // the front of the queue in place (modal) before opening the next file element.
-    // Iterate the in-memory queue rather than recursing through the snapshot — the
-    // metadataCache lags processFrontMatter, so a re-read could re-present a card we
-    // just graded. A cancelled grade (falsy) stops the burst and leaves the rest.
-    let i = 0;
-    while (i < queue.length && queue[i].fm?.inline_parent) {
-      const graded = await this._reviewInlineCard(queue[i].fm.inline_parent, queue[i].fm.id);
-      if (!graded) return;
-      i++;
-    }
-    if (i >= queue.length) { new Notice('✨ Caught up.'); return; }
-    const next = queue[i];
+    const next = queue[0];
     await this.app.workspace.getLeaf(false).openFile(next.tfile);
-    const action = next.fm.type === 'source' ? '📖 Read' :
-      (next.fm.type === 'card' ? '🃏 Recall' : '📝 Process');
-    new Notice(`${action}: ${next.tfile.basename} · p${next.fm.priority ?? '—'} · ${queue.length - i - 1} more in queue`);
+    const action = next.fm.type === 'source' ? '📖 Read' : '📝 Process';
+    new Notice(`${action}: ${next.tfile.basename} · p${next.fm.priority ?? '—'} · ${queue.length - 1} more in queue`);
   }
 
   async randomDue() {
     const pool = this.buildDuePool();
     if (pool.length === 0) { new Notice('✨ Nothing due. Caught up.'); return; }
     const pick = pool[Math.floor(Math.random() * pool.length)];
-    if (pick.fm?.inline_parent) {
-      await this._reviewInlineCard(pick.fm.inline_parent, pick.fm.id);
-      return;
-    }
     await this.app.workspace.getLeaf(false).openFile(pick.tfile);
-    const action = pick.fm.type === 'source' ? '📖 Read' :
-      (pick.fm.type === 'card' ? '🃏 Recall' : '📝 Process');
+    const action = pick.fm.type === 'source' ? '📖 Read' : '📝 Process';
     new Notice(`🎲 ${action}: ${pick.tfile.basename} · p${pick.fm.priority ?? '—'} (1 of ${pool.length} due)`);
   }
 
   async gradeAndAdvance() {
+    if (getFm(this.app, this.app.workspace.getActiveFile())?.type === 'card') {
+      this.reviewCardsInNote();
+      return;
+    }
     await this.endSession();
     await this.nextElement();
   }
 
-  // ---- End Session (FSRS card + A-Factor topic) --------------------------
+  // ---- End Session (A-Factor topics; cards delegate to Spaced Repetition) -
 
   async endSession() {
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') {
-      new Notice('Open an IR source / extract / card first.');
+      new Notice('Open an incremental reading source, extract, or card first.');
       return;
     }
     const fm = getFm(this.app, active);
     if (!fm || (fm.type !== 'source' && fm.type !== 'extract' && fm.type !== 'card')) {
-      new Notice('Active note is not an IR element.');
+      new Notice('Active note is not an incremental reading element.');
       return;
     }
     const today = todayDMY();
 
     if (fm.type === 'card') {
-      await this._gradeCard(active, fm, today);
+      this.reviewCardsInNote();
       return;
     }
     await this._gradeTopic(active, fm, today);
-  }
-
-  async _gradeCard(file, fm, today) {
-    let qMd, aMd, hideLabels = false;
-    const isOcclusion = fm.card_format === 'occlusion';
-
-    if (fm.inline_parent) {
-      // Inline cards render their own content, not the parent body.
-      if (fm.type === 'card' && fm.question != null && fm.answer != null) {
-        // qa inline card
-        qMd = fm.question;
-        aMd = fm.answer;
-      } else if (fm.text != null) {
-        // cloze inline card — mask this card's marker for the question, reveal for the answer.
-        const line = fm.full_line || fm.text;
-        const hlMarker = `==${fm.text}==`;
-        if (line.includes(hlMarker)) {
-          // ==highlight== style — mask only this card's occurrence (LaTeX-safe).
-          qMd = line.split(hlMarker).join(fm.hint ? `[${fm.hint}]` : '[…]');
-          aMd = line.split(hlMarker).join(`**${fm.text}**`);
-        } else {
-          // {{c1::...}} style.
-          qMd = line.replace(/\{\{c\d+::([^}]+?)(?:::([^}]+?))?\}\}/g, (_, txt, hint) =>
-            hint ? `[${hint}]` : '[…]');
-          aMd = line.replace(/\{\{c\d+::([^}]+?)(?:::[^}]+?)?\}\}/g, (_, txt) => `**${txt}**`);
-        }
-      } else {
-        // Fallback: best-effort echo.
-        qMd = String(fm.text ?? fm.question ?? '');
-        aMd = String(fm.answer ?? fm.text ?? '');
-      }
-    } else {
-      const fullContent = await this.app.vault.read(file);
-      let body = fullContent.replace(/^---\n[\s\S]*?\n---\n/, '');
-      const idx = body.indexOf(BODY_MARKER);
-      if (idx >= 0) body = body.slice(idx + BODY_MARKER.length);
-      body = body.trim();
-
-      if (isOcclusion) {
-        // For occlusion both Q and A are the same code-block; the renderer's
-        // built-in Show Answer button handles the visual reveal. The grade
-        // modal acts as the framing UI.
-        qMd = body;
-        aMd = body;
-        hideLabels = true;
-      } else if (fm.card_format === 'cloze') {
-        aMd = body;
-        const clozeIdx = Number(fm.cloze_index);
-        if (Number.isFinite(clozeIdx) && clozeIdx >= 1) {
-          // Sibling card: hide only the Nth ==mark== (1-based), leave others visible.
-          let seen = 0;
-          qMd = body.replace(new RegExp(HL_CLOZE_SRC, 'g'), (_m, inner) => {
-            seen++;
-            return seen === clozeIdx ? '**[ … ]**' : inner;
-          });
-          qMd = qMd.replace(/\{\{([^}]+)\}\}/g, '$1');
-        } else {
-          qMd = body.replace(new RegExp(HL_CLOZE_SRC, 'g'), '**[ … ]**').replace(/\{\{([^}]+)\}\}/g, '**[ … ]**');
-        }
-      } else {
-        // Basic: split on the [!answer] callout. Question is everything before.
-        const m = body.match(/^([\s\S]*?)\n\n> \[!answer\][^\n]*\n([\s\S]*?)$/);
-        if (m) {
-          qMd = m[1].trim();
-          // Strip "> " quote prefix to render answer as plain markdown
-          aMd = m[2].replace(/^> ?/gm, '').trim();
-        } else { qMd = body; aMd = body; }
-      }
-    }
-
-    const grade = await reviewCard(this.app, {
-      title: file.basename,
-      sourcePath: file.path,
-      questionMd: qMd,
-      answerMd: aMd,
-      hideLabels,
-      directGrade: isOcclusion,
-    });
-    if (!grade) return false;
-    const gradeLabel = ['', 'Again', 'Hard', 'Good', 'Easy'][grade];
-
-    const lastDate = parseDMY(fm.last_reviewed);
-    const todayDateObj = parseDMY(today);
-    const elapsed = (lastDate && todayDateObj)
-      ? Math.max(0, Math.round((todayDateObj - lastDate) / 86400000)) : 0;
-
-    const ctx = fsrsCtx(this.settings);
-    const isFirst = fm.stability == null || fm.stability === '';
-    let sBefore = null, dBefore = null, rAt, sAfter, dAfter;
-    if (isFirst) {
-      rAt = 1.0;
-      sAfter = ctx.w[grade - 1];
-      dAfter = fsrsSeedDifficulty(ctx, grade);
-    } else {
-      sBefore = Number(fm.stability);
-      dBefore = Number(fm.difficulty) || ctx.w[4];
-      rAt = fsrsRetrievability(ctx, elapsed, sBefore);
-      if (elapsed < 1 && this.settings.fsrs.short_term_enabled) {
-        sAfter = fsrsShortTermStability(ctx, sBefore, grade);
-      } else if (grade === 1) {
-        sAfter = fsrsUpdateStabilityLapse(ctx, dBefore, sBefore, rAt);
-      } else {
-        sAfter = fsrsUpdateStabilityRecall(ctx, dBefore, sBefore, rAt, grade);
-      }
-      dAfter = fsrsUpdateDifficulty(ctx, dBefore, grade);
-    }
-
-    const interval = fsrsInterval(ctx, sAfter);
-    const nextReview = futureDMY(interval);
-    const reviewCount = (fm.review_count ?? 0) + 1;
-
-    if (fm.inline_parent) {
-      await updateInlineCardState(this.app, fm.inline_parent, fm.id, (c) => ({
-        ...c,
-        stability: round4(sAfter),
-        difficulty: round4(dAfter),
-        last_grade: grade,
-        last_retrievability: round4(rAt ?? 0),
-        last_reviewed: today,
-        next_review: nextReview,
-        interval,
-        review_count: reviewCount,
-        status: c.status === 'pending' || c.status === 'inbox' ? 'active' : (c.status || 'active'),
-      }));
-    } else {
-      await this.app.fileManager.processFrontMatter(file, (fmw) => {
-        fmw.stability = round4(sAfter);
-        fmw.difficulty = round4(dAfter);
-        fmw.last_grade = grade;
-        fmw.last_retrievability = round4(rAt);
-        fmw.last_reviewed = today;
-        fmw.next_review = nextReview;
-        fmw.interval = interval;
-        fmw.review_count = reviewCount;
-        if (fmw.status === 'inbox' || fmw.status === 'pending') fmw.status = 'active';
-      });
-    }
-
-    const logFile = this.app.vault.getAbstractFileByPath(REVIEW_LOG_PATH);
-    if (logFile) {
-      const fmt = (v) => v == null ? '' : (typeof v === 'number' ? round4(v).toString() : String(v));
-      const row = `| ${today} | [[${file.basename}]] | card | ${grade} | ${elapsed} | ${(rAt * 100).toFixed(1)}% | ${fmt(sBefore)} | ${fmt(sAfter)} | ${fmt(dBefore)} | ${fmt(dAfter)} |\n`;
-      await this.app.vault.append(logFile, row);
-    }
-    let parentHint = '';
-    if (grade <= 2) {
-      const parentName = linkTarget(fm.source);
-      if (parentName) parentHint = ` · Recall weak — revisit [[${parentName}]]?`;
-    }
-    new Notice(`Card: ${gradeLabel} → S ${round4(sAfter)}d, D ${round4(dAfter)}, next in ${interval}d (${nextReview})${parentHint}`);
-    return grade;
   }
 
   async _gradeTopic(file, fm, today) {
@@ -2446,10 +2110,9 @@ class IRToolkit extends Plugin {
       }
     }
 
-    // Log topic rep with empty grade/S/D so an FSRS optimizer treating grade as
-    // numeric will skip these rows. A-Factor before/after captured in D cols
-    // for inspection in dashboard / scripts (not used by FSRS).
-    const logFile = this.app.vault.getAbstractFileByPath(REVIEW_LOG_PATH);
+    // Keep the historical review-log columns stable. A-Factor before/after are
+    // captured in the final columns for dashboard and script compatibility.
+    const logFile = this.app.vault.getAbstractFileByPath(this.reviewLogPath());
     if (logFile) {
       const elapsedDays = (() => {
         const lr = parseDMY(fm.last_reviewed);
@@ -2481,7 +2144,7 @@ class IRToolkit extends Plugin {
 
   async _activateQueueView() {
     if (!this.settings.queue.sidebar_enabled) {
-      new Notice('Sidebar disabled in IR Toolkit settings');
+      new Notice('Sidebar disabled in Incremental Reading settings');
       return;
     }
     const leaves = this.app.workspace.getLeavesOfType(IR_QUEUE_VIEW_TYPE);
@@ -2535,7 +2198,7 @@ class IRToolkit extends Plugin {
   // with path-based resolution if that stops holding.
   buildTreeIndex() {
     const pages = [];
-    for (const f of getAllIRFiles(this.app)) {
+    for (const f of getAllIRFiles(this.app, this.settings)) {
       const fm = getFm(this.app, f);
       if (!fm) continue;
       const t = fm.type;
@@ -2554,7 +2217,7 @@ class IRToolkit extends Plugin {
     const path = `${CATEGORIES_FOLDER}/${safe}.md`;
     if (this.app.vault.getAbstractFileByPath(path)) { new Notice('Category already exists'); return null; }
     const fm = ['---', 'type: category'];
-    if (parentName) fm.push(`parent: "[[${parentName}]]"`);
+    if (parentName) fm.push(`parent: ${JSON.stringify(`[[${parentName}]]`)}`);
     fm.push('tree_order: 0', 'tags:', '  - incremental-reading', '  - ir/category', '---', '', `# ${name}`, '');
     const file = await this.app.vault.create(path, fm.join('\n'));
     new Notice(`Category created: ${name}`);
@@ -2569,8 +2232,13 @@ class IRToolkit extends Plugin {
       new Notice('Refused: would create a cycle'); return;
     }
     await this.app.fileManager.processFrontMatter(child, (fm) => {
-      if (newParentName) fm.parent = `[[${newParentName}]]`;
-      else delete fm.parent;
+      if (newParentName) {
+        fm.parent = `[[${newParentName}]]`;
+        delete fm.tree_root;
+      } else {
+        delete fm.parent;
+        fm.tree_root = true;
+      }
     });
     new Notice(newParentName ? `Moved under ${newParentName}` : 'Moved to top level');
     this._refreshTreeViews();
@@ -2581,7 +2249,7 @@ class IRToolkit extends Plugin {
     if (!active || active.extension !== 'md') { new Notice('No active markdown element'); return; }
     const fm = getFm(this.app, active);
     if (!fm || !['category', 'source', 'extract', 'card'].includes(fm.type)) {
-      new Notice('Active note is not an IR element'); return;
+      new Notice('Active note is not an incremental reading element'); return;
     }
     const idx = this.buildTreeIndex();
     const candidates = [...idx.byName.values()].filter(p => p.fm.type !== 'card' && p.path !== active.path);
@@ -2643,29 +2311,16 @@ class IRToolkit extends Plugin {
   async dismissTreeNode(path) {
     const f = this.app.vault.getAbstractFileByPath(path);
     if (!f) return;
+    if (getFm(this.app, f)?.type === 'card') {
+      new Notice('Card review state is managed by Spaced Repetition.');
+      return;
+    }
     const ok = await confirmDialog(this.app, `Dismiss "${f.basename}"?`,
       'Sets status: dismissed (kept in the tree, removed from the review queue).');
     if (!ok) return;
     await this.app.fileManager.processFrontMatter(f, (fm) => { fm.status = 'dismissed'; });
     new Notice('Dismissed');
     this._refreshTreeViews();
-  }
-
-  // Returns the grade (1-4) if the card was graded, or false if the parent/card
-  // was missing or the user cancelled the modal. Callers (e.g. nextElement) rely
-  // on the falsy result to stop advancing rather than re-presenting the same card.
-  async _reviewInlineCard(parentPath, cardId) {
-    const parentFile = this.app.vault.getAbstractFileByPath(parentPath);
-    if (!parentFile) { new Notice('Inline parent file not found'); return false; }
-    const parentCache = this.app.metadataCache.getFileCache(parentFile);
-    const card = (parentCache?.frontmatter?.inline_cards || []).find(c => c.id === cardId);
-    if (!card) { new Notice('Inline card not found'); return false; }
-
-    // Open the parent so the user has context; non-blocking.
-    await this.app.workspace.getLeaf(false).openFile(parentFile);
-
-    const syntheticFm = inlineCardFm(card, parentCache?.frontmatter, parentPath);
-    return await this._gradeCard(parentFile, syntheticFm, todayDMY());
   }
 
   async seedInlineCards() {
@@ -2679,44 +2334,53 @@ class IRToolkit extends Plugin {
     }
     const body = await this.app.vault.cachedRead(active);
     const parsed = parseInlineCards(active.path, body, this.settings);
-    const parsedIds = new Set(parsed.map(c => c.id));
-    const existing = new Set((fm.inline_cards || []).map(c => c.id));
-    const newCards = parsed.filter(c => !existing.has(c.id));
+    if (!parsed.length) { new Notice('No inline cards found'); return; }
 
-    // The id is a hash of file path + literal, so editing a card's own text mints a
-    // new id and orphans the old entry — re-seeding would then leave a stale duplicate.
-    // Prune orphans (literal no longer in the body) that were never reviewed; keep
-    // reviewed ones since their FSRS history is worth preserving (dismiss manually).
-    const isReviewed = (c) => c.review_count > 0 || c.last_reviewed != null || c.stability != null;
-    const orphans = (fm.inline_cards || []).filter(c => !parsedIds.has(c.id) && !isReviewed(c));
+    const grouped = new Map();
+    for (const card of parsed) {
+      const key = card.type === 'qa' ? card.id : inlineCardId(active.path, `line:${card.line}:${card.full_line}`);
+      if (!grouped.has(key)) grouped.set(key, card);
+    }
+    const existingIds = new Set();
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (!pathIsInside(file.path, this.cardsFolder())) continue;
+      const id = getFm(this.app, file)?.ir_inline_id;
+      if (id) existingIds.add(String(id));
+    }
 
-    if (!newCards.length && !orphans.length) { new Notice('No new inline cards found'); return; }
-
-    await this.app.fileManager.processFrontMatter(active, (fmw) => {
-      fmw.inline_cards = fmw.inline_cards || [];
-      if (orphans.length) {
-        const drop = new Set(orphans.map(c => c.id));
-        fmw.inline_cards = fmw.inline_cards.filter(c => !drop.has(c.id));
+    let created = 0;
+    const clozeRegex = new RegExp(this.settings.inline_cards.cloze_regex, 'g');
+    for (const [id, card] of grouped) {
+      if (existingIds.has(id)) continue;
+      let format = card.type === 'qa' ? 'basic' : 'cloze';
+      let question = card.question;
+      let answer = card.answer || '';
+      if (format === 'cloze') {
+        question = card.full_line.replace(clozeRegex, (_match, _index, text, hint) =>
+          `==${text}==${hint ? `^[${hint}]` : ''}`
+        );
       }
-      for (const c of newCards) {
-        fmw.inline_cards.push({
-          ...c,
-          status: 'pending',
-          priority: fmw.priority ?? 50,
-        });
-      }
-    });
-    const parts = [];
-    if (newCards.length) parts.push(`seeded ${newCards.length}`);
-    if (orphans.length) parts.push(`pruned ${orphans.length} edited/removed`);
-    new Notice(`Inline cards: ${parts.join(' · ')}`);
+      await this._createSpacedRepetitionCard(active, {
+        format,
+        question,
+        answer,
+        extraFrontmatter: [`ir_inline_id: ${JSON.stringify(id)}`],
+      });
+      existingIds.add(id);
+      created++;
+    }
+    new Notice(created
+      ? `Exported ${created} inline card${created === 1 ? '' : 's'} to Spaced Repetition`
+      : 'All inline cards are already exported');
   }
 
   async addCheckpoint(noteOverride) {
     const active = this.app.workspace.getActiveFile();
     if (!active) { new Notice('No active file'); return; }
     const cache = this.app.metadataCache.getFileCache(active);
-    if (!isActiveIR(cache?.frontmatter)) { new Notice('Not an active IR element'); return; }
+    if (!isActiveIR(cache?.frontmatter) || cache.frontmatter.type === 'card') {
+      new Notice('Checkpoints apply to sources and extracts only.'); return;
+    }
 
     let note = noteOverride;
     if (note == null) {
@@ -2751,14 +2415,14 @@ class IRToolkit extends Plugin {
     new Notice(interval != null ? `Checkpoint saved, next in ${interval}d` : 'Checkpoint saved');
   }
 
-  // ---- Done / Dismiss / Postpone / Schedule / Forget ---------------------
+  // ---- Done / Dismiss / Postpone / Schedule ------------------------------
 
   async markDone() {
-    const r = await resolveIRFromActive(this.app, { allowCard: true, allowPdfFallback: true });
+    const r = await resolveIRFromActive(this.app, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const { tfile, fm } = r;
     if (fm.status === 'done') { new Notice('Already done.'); return; }
-    const labels = { source: 'Source', extract: 'Extract', card: 'Card' };
+    const labels = { source: 'Source', extract: 'Extract' };
     if (!(await confirmDialog(this.app, `Mark ${labels[fm.type]} as done?`))) return;
     await this.app.fileManager.processFrontMatter(tfile, (fmw) => {
       fmw.status = 'done';
@@ -2768,7 +2432,7 @@ class IRToolkit extends Plugin {
   }
 
   async dismiss() {
-    const r = await resolveIRFromActive(this.app, { allowCard: true, allowPdfFallback: true });
+    const r = await resolveIRFromActive(this.app, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const { tfile, fm } = r;
     if (fm.status === 'dismissed') { new Notice('Already dismissed.'); return; }
@@ -2780,7 +2444,7 @@ class IRToolkit extends Plugin {
   }
 
   async postpone() {
-    const r = await resolveIRFromActive(this.app, { allowCard: true, allowPdfFallback: true });
+    const r = await resolveIRFromActive(this.app, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const choice = await pickFromList(
       this.app,
@@ -2792,15 +2456,13 @@ class IRToolkit extends Plugin {
     const newDate = futureDMY(choice);
     await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => {
       fmw.next_review = newDate;
-      // Cards keep their FSRS-derived interval (reflects stability). Topics
-      // get the raw postpone window since their interval is the scheduler input.
-      if (r.fm.type !== 'card') fmw.interval = choice;
+      fmw.interval = choice;
     });
     new Notice(`Postponed +${choice}d · Next review: ${newDate}`);
   }
 
   async schedule() {
-    const r = await resolveIRFromActive(this.app, { allowCard: true, allowPdfFallback: true });
+    const r = await resolveIRFromActive(this.app, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const cur = r.fm.next_review || '(unscheduled)';
     const raw = await askText(this.app, `Schedule (DD-MM-YYYY or +Nd/-Nd; current: ${cur})`, '');
@@ -2828,37 +2490,15 @@ class IRToolkit extends Plugin {
     const newInterval = newParsed ? Math.max(1, Math.round((newParsed - todayDate()) / 86400000)) : null;
     await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => {
       fmw.next_review = newDate;
-      if (newInterval != null && r.fm.type !== 'card') fmw.interval = newInterval;
+      if (newInterval != null) fmw.interval = newInterval;
     });
     new Notice(`Scheduled: ${cur} → ${newDate}`);
-  }
-
-  async forgetCard() {
-    const r = await resolveIRFromActive(this.app, { allowCard: true, allowPdfFallback: false });
-    if (!r) return;
-    if (r.fm.type !== 'card') { new Notice('Forget applies to cards only.'); return; }
-    const priority = r.fm.priority ?? 50;
-    const interval = priorityToInterval(priority);
-    const nextReview = futureDMY(interval);
-    if (!(await confirmDialog(this.app, `Clear FSRS state and reschedule for ${nextReview} (priority ${priority})?`))) return;
-    await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => {
-      delete fmw.stability;
-      delete fmw.difficulty;
-      delete fmw.last_grade;
-      delete fmw.last_retrievability;
-      delete fmw.review_count;
-      fmw.last_reviewed = null;
-      fmw.next_review = nextReview;
-      fmw.interval = 1;
-      fmw.status = 'pending';
-    });
-    new Notice(`Card forgotten · FSRS cleared · next ${nextReview}.`);
   }
 
   // ---- Set Priority / Boost ---------------------------------------------
 
   async setPriority() {
-    const r = await resolveIRFromActive(this.app, { allowCard: true, allowPdfFallback: true });
+    const r = await resolveIRFromActive(this.app, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const cur = r.fm.priority ?? 50;
     const raw = await askText(this.app, 'New priority (1-100, 1=highest)', String(cur));
@@ -2866,12 +2506,11 @@ class IRToolkit extends Plugin {
     const p = parseInt(raw, 10);
     if (isNaN(p) || p < 1 || p > 100) { new Notice('Invalid priority — integer 1-100.'); return; }
     await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => { fmw.priority = p; });
-    const sched = r.fm.type === 'card' ? 'FSRS-driven' : 'A-Factor-driven';
-    new Notice(`Priority → ${p} (next_review unchanged — ${sched})`);
+    new Notice(`Priority → ${p} (next_review unchanged — A-Factor-driven)`);
   }
 
   async boost() {
-    const r = await resolveIRFromActive(this.app, { allowCard: true, allowPdfFallback: true });
+    const r = await resolveIRFromActive(this.app, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const amount = await pickFromList(
       this.app,
@@ -2902,6 +2541,7 @@ class IRToolkit extends Plugin {
       const subtree = walkSubtree(this.app, r.tfile.basename, r.tfile.path);
       for (const p of subtree) {
         if (p.tfile.path === r.tfile.path) continue;
+        if (p.fm.type === 'card') continue;
         const childOrig = p.fm.priority ?? 50;
         const childNew = Math.max(1, childOrig - delta);
         if (childNew !== childOrig) {
@@ -2924,18 +2564,16 @@ class IRToolkit extends Plugin {
     if (!r) return;
     const filter = await pickFromList(
       this.app,
-      ['All elements', 'Topics only', 'Cards only', 'Due / overdue only'],
-      ['all', 'topics', 'cards', 'due'],
+      ['All topics', 'Due / overdue only'],
+      ['all', 'due'],
       'Filter subtree by'
     );
     if (!filter) return;
 
     const today = todayDate();
-    let subset = walkSubtree(this.app, r.tfile.basename, r.tfile.path)
+    let subset = walkSubtree(this.app, r.tfile.basename, r.tfile.path, { includeCards: false })
       .filter(p => p.tfile.path !== r.tfile.path);
-    if (filter === 'topics') subset = subset.filter(p => p.fm.type !== 'card');
-    else if (filter === 'cards') subset = subset.filter(p => p.fm.type === 'card');
-    else if (filter === 'due') subset = subset.filter(p => isDue(p.fm, today));
+    if (filter === 'due') subset = subset.filter(p => isDue(p.fm, today));
     subset = subset.filter(p => p.fm.status !== 'done' && p.fm.status !== 'container' && p.fm.status !== 'dismissed');
     if (subset.length === 0) { new Notice(`No descendants match.`); return; }
 
@@ -2950,7 +2588,7 @@ class IRToolkit extends Plugin {
       this.app,
       subset,
       p => {
-        const t = p.fm.type === 'source' ? '📖' : (p.fm.type === 'card' ? '🃏' : '📝');
+        const t = p.fm.type === 'source' ? '📖' : '📝';
         return `${t} ${statusIcon(p.fm)} p${p.fm.priority ?? '—'} u${urgency(p.fm, today).toFixed(0)}  ${p.tfile.basename}`;
       },
       `Subset (${r.tfile.basename})`
@@ -2966,9 +2604,9 @@ class IRToolkit extends Plugin {
     if (!choice) return;
     const today = todayDate();
     const overdue = [];
-    for (const f of getAllIRFiles(this.app)) {
+    for (const f of getAllIRFiles(this.app, this.settings)) {
       const fm = getFm(this.app, f);
-      if (!isActiveIR(fm)) continue;
+      if (!isActiveIR(fm) || fm.type === 'card') continue;
       if (!isPastDue(fm, today)) continue;
       overdue.push({ tfile: f, fm });
     }
@@ -2999,6 +2637,7 @@ class IRToolkit extends Plugin {
     let postponed = 0;
     for (const p of subtree) {
       const fm = p.fm;
+      if (fm.type === 'card') continue;
       if (fm.status === 'done' || fm.status === 'container' || fm.status === 'dismissed') continue;
       let baseDate = todayDMY();
       if (fm.next_review) {
@@ -3050,14 +2689,17 @@ class IRToolkit extends Plugin {
 
   async _writeExtract(sourceFile, fm, body) {
     const sourceTitle = sourceFile.basename;
+    const safeSourceTitle = slugifyForFolder(sourceTitle) || 'Untitled';
+    const extractsFolder = this.extractsFolder();
+    await ensureFolder(this.app, extractsFolder);
     const priority = fm.priority ?? 50;
     const today = todayDMY();
     const existing = this.app.vault.getMarkdownFiles().filter(f =>
-      f.path.startsWith(EXTRACTS_FOLDER + '/') &&
-      f.basename.startsWith(sourceTitle + ' - Extract')
+      pathIsInside(f.path, extractsFolder) &&
+      f.basename.startsWith(safeSourceTitle + ' - Extract')
     );
     const n = existing.length + 1;
-    const name = `${sourceTitle} - Extract ${n}`;
+    const name = `${safeSourceTitle} - Extract ${n}`;
     const autoInterval = priorityToInterval(priority);
 
     const customStr = await askText(this.app, `First interval in days (blank for auto: ${autoInterval}d)`, '');
@@ -3067,7 +2709,7 @@ class IRToolkit extends Plugin {
 
     const content = `---
 type: extract
-source: "[[${sourceTitle}]]"
+  source: ${JSON.stringify(`[[${sourceTitle}]]`)}
 status: pending
 priority: ${priority}
 next_review: ${nextReview}
@@ -3083,7 +2725,7 @@ tags:
 
 ${body}
 `;
-    const path = `${EXTRACTS_FOLDER}/${name}.md`;
+    const path = `${extractsFolder}/${name}.md`;
     if (this.app.vault.getAbstractFileByPath(path)) {
       new Notice(`Extract already exists at ${path}`); return;
     }
@@ -3118,14 +2760,6 @@ ${body}
     this._dbg('flashcard: clip length', clip.length, 'inline-match', /^[^\n]+::[^\n]+$/.test(clip));
 
     const parentTitle = parentFile.basename;
-    const parentPriority = fm.priority ?? 50;
-    const today = todayDMY();
-    // New cards schedule to TOMORROW so they don't barge into today's
-    // session. First grading (whenever it lands) seeds FSRS from W[grade-1]
-    // regardless — there's no learning-phase penalty for the deferral.
-    const initialInterval = 1;
-    const nextReview = futureDMY(1);
-
     let cardFormat = null, questionText = null, answerText = null;
 
     const COLON = ':';
@@ -3195,76 +2829,13 @@ ${body}
       }
     }
 
-    const existing = this.app.vault.getMarkdownFiles().filter(f =>
-      f.path.startsWith(CARDS_FOLDER + '/') &&
-      f.basename.startsWith(parentTitle + ' - Card')
-    );
-    const cardNum = existing.length + 1;
-    const SPACER = `<div style="height: 90vh;"></div>\n\n${BODY_MARKER}\n\n`;
-
-    const buildBody = (q, a, fmt) => {
-      if (fmt === 'cloze') return `${q}\n`;
-      return `${q}\n\n> [!answer]- Answer\n> ${a.replace(/\n/g, '\n> ')}\n`;
-    };
-
-    const buildContent = (q, a, fmt, extraFmLines = '') => `---
-type: card
-source: "[[${parentTitle}]]"
-status: pending
-priority: ${parentPriority}
-next_review: ${nextReview}
-interval: ${initialInterval}
-review_count: 0
-last_reviewed:
-last_grade:
-last_retrievability:
-stability:
-difficulty:
-date_added: ${today}
-card_format: ${fmt}${extraFmLines}
-cssclasses:
-  - hide-answer
-tags:
-  - incremental-reading
-  - ir/card
----
-
-${SPACER}${buildBody(q, a, fmt)}`;
-
-    if (cardFormat === 'reverse') {
-      const fwdName = `${parentTitle} - Card ${cardNum}`;
-      const revName = `${parentTitle} - Card ${cardNum + 1}`;
-      await this.app.vault.create(`${CARDS_FOLDER}/${fwdName}.md`,
-        buildContent(questionText, answerText, 'basic'));
-      await this.app.vault.create(`${CARDS_FOLDER}/${revName}.md`,
-        buildContent(answerText, questionText, 'basic'));
-      new Notice(`Reverse pair: ${fwdName} + ${revName}`);
-    } else if (cardFormat === 'cloze') {
-      // Generate one card per ==mark== (SM canon: sibling cards share text,
-      // each hides exactly one deletion). cloze_index is 1-based.
-      const marks = [...questionText.matchAll(new RegExp(HL_CLOZE_SRC, 'g'))];
-      const n = marks.length;
-      if (n <= 1) {
-        const name = `${parentTitle} - Card ${cardNum}`;
-        await this.app.vault.create(`${CARDS_FOLDER}/${name}.md`,
-          buildContent(questionText, answerText, 'cloze', `\ncloze_index: 1`));
-        new Notice(`Card created: ${name} · priority ${parentPriority}`);
-      } else {
-        const names = [];
-        for (let i = 0; i < n; i++) {
-          const name = `${parentTitle} - Card ${cardNum + i}`;
-          await this.app.vault.create(`${CARDS_FOLDER}/${name}.md`,
-            buildContent(questionText, answerText, 'cloze', `\ncloze_index: ${i + 1}`));
-          names.push(name);
-        }
-        new Notice(`Cloze siblings: ${n} cards (one per ==mark==)`);
-      }
-    } else {
-      const name = `${parentTitle} - Card ${cardNum}`;
-      await this.app.vault.create(`${CARDS_FOLDER}/${name}.md`,
-        buildContent(questionText, answerText, cardFormat));
-      new Notice(`Card created: ${name} · priority ${parentPriority}`);
-    }
+    const created = await this._createSpacedRepetitionCard(parentFile, {
+      format: cardFormat,
+      question: questionText,
+      answer: answerText,
+    });
+    const kind = cardFormat === 'reverse' ? 'Bidirectional card' : (cardFormat === 'cloze' ? 'Cloze card' : 'Card');
+    new Notice(`${kind} created for Spaced Repetition: ${created.name}`);
   }
 
   // Build a basic image-based flashcard (image is the question, user supplies
@@ -3274,10 +2845,6 @@ ${SPACER}${buildBody(q, a, fmt)}`;
   // the caption prompt — used for the pure "name this image" flashcard type.
   async _flashcardFromImage(parentFile, fm, { imgClip, vaultPath, skipCaption } = {}) {
     const parentTitle = parentFile.basename;
-    const parentPriority = fm.priority ?? 50;
-    const today = todayDMY();
-    const initialInterval = 1;
-    const nextReview = futureDMY(1);
 
     let imgPath;
     if (imgClip) {
@@ -3306,42 +2873,15 @@ ${SPACER}${buildBody(q, a, fmt)}`;
     if (answer === null || !answer.trim()) { new Notice('Answer required.'); return; }
 
     const questionText = caption && caption.trim()
-      ? `${caption.trim()}\n\n![[${imgPath}]]`
+      ? `${caption.trim()}\n![[${imgPath}]]`
       : `![[${imgPath}]]`;
     const answerText = answer.trim();
-
-    const existing = this.app.vault.getMarkdownFiles().filter(f =>
-      f.path.startsWith(CARDS_FOLDER + '/') &&
-      f.basename.startsWith(parentTitle + ' - Card')
-    );
-    const cardNum = existing.length + 1;
-    const name = `${parentTitle} - Card ${cardNum}`;
-    const SPACER = `<div style="height: 90vh;"></div>\n\n${BODY_MARKER}\n\n`;
-    const content = `---
-type: card
-source: "[[${parentTitle}]]"
-status: pending
-priority: ${parentPriority}
-next_review: ${nextReview}
-interval: ${initialInterval}
-review_count: 0
-last_reviewed:
-last_grade:
-last_retrievability:
-stability:
-difficulty:
-date_added: ${today}
-card_format: basic
-cssclasses:
-  - hide-answer
-tags:
-  - incremental-reading
-  - ir/card
----
-
-${SPACER}${questionText}\n\n> [!answer]- Answer\n> ${answerText.replace(/\n/g, '\n> ')}\n`;
-    await this.app.vault.create(`${CARDS_FOLDER}/${name}.md`, content);
-    new Notice(`Image card: ${name} · priority ${parentPriority}`);
+    const created = await this._createSpacedRepetitionCard(parentFile, {
+      format: 'basic',
+      question: questionText,
+      answer: answerText,
+    });
+    new Notice(`Image card created for Spaced Repetition: ${created.name}`);
   }
 
   // "Name this image" flashcard: image is the only thing on the front,
@@ -3496,21 +3036,6 @@ ${SPACER}${questionText}\n\n> [!answer]- Answer\n> ${answerText.replace(/\n/g, '
     const cardSpecs = generateCardsFromRects(result.rects, result.mode);
     if (!cardSpecs || cardSpecs.length === 0) { new Notice('No cards generated.'); return; }
 
-    const parentTitle = (r.fm.type === 'source')
-      ? r.tfile.basename
-      : (() => {
-          const link = String(r.fm.source || '').match(/\[\[([^\]|#]+)/);
-          return link ? link[1] : r.tfile.basename;
-        })();
-    const parentPriority = r.fm.priority ?? 50;
-    const today = todayDMY();
-    const nextReview = futureDMY(1);
-
-    const existing = this.app.vault.getMarkdownFiles().filter(f =>
-      f.path.startsWith(CARDS_FOLDER + '/') &&
-      f.basename.startsWith(parentTitle + ' - Card')
-    );
-    let cardNum = existing.length + 1;
     let written = 0;
 
     const yamlRects = result.rects
@@ -3522,46 +3047,26 @@ ${SPACER}${questionText}\n\n> [!answer]- Answer\n> ${answerText.replace(/\n/g, '
       .join('\n');
 
     for (const spec of cardSpecs) {
-      const name = `${parentTitle} - Card ${cardNum}`;
-      const body = `<div style="height: 90vh;"></div>\n\n${BODY_MARKER}\n\n` +
-        '```ir-occlusion\n' +
-        `image: ${resolvedPath}\n` +
+      const question = '```ir-occlusion\n' +
+        `image: ${JSON.stringify(resolvedPath)}\n` +
         `mode: ${result.mode}\n` +
         `question_index: ${spec.questionIndex}\n` +
         'rects:\n' + yamlRects + '\n' +
         '```\n';
-      const content = `---
-type: card
-source: "[[${parentTitle}]]"
-status: pending
-priority: ${parentPriority}
-next_review: ${nextReview}
-interval: 1
-review_count: 0
-last_reviewed:
-last_grade:
-last_retrievability:
-stability:
-difficulty:
-date_added: ${today}
-card_format: occlusion
-occlusion_image: "${resolvedPath}"
-occlusion_mode: ${result.mode}
-occlusion_question_index: ${spec.questionIndex}
-cssclasses:
-  - hide-answer
-tags:
-  - incremental-reading
-  - ir/card
----
-
-${body}`;
-      await this.app.vault.create(`${CARDS_FOLDER}/${name}.md`, content);
-      cardNum++;
+      await this._createSpacedRepetitionCard(r.tfile, {
+        format: 'occlusion',
+        question,
+        answer: `![[${resolvedPath}]]`,
+        extraFrontmatter: [
+          `occlusion_image: ${JSON.stringify(resolvedPath)}`,
+          `occlusion_mode: ${result.mode}`,
+          `occlusion_question_index: ${spec.questionIndex}`,
+        ],
+      });
       written++;
     }
 
-    new Notice(`Occlusion: ${written} card(s) from ${result.rects.length} rect(s) [${result.mode}]`);
+    new Notice(`Occlusion: ${written} Spaced Repetition card(s) from ${result.rects.length} rect(s)`);
   }
 
   // ---- New source / Import clipping --------------------------------------
@@ -3607,11 +3112,12 @@ ${body}`;
       total_seconds = parseTimeInput(dur);
       read_point_seconds = 0;
     } else if (sourceType === 'video') {
+      const videosFolder = `${this.sourcesFolder()}/Videos`;
       const videos = this.app.vault.getFiles()
-        .filter(f => f.path.startsWith(`${SOURCES_FOLDER}/Videos/`) && /\.(mp4|webm|mov|mkv)$/i.test(f.name))
+        .filter(f => f.path.startsWith(videosFolder + '/') && /\.(mp4|webm|mov|mkv)$/i.test(f.name))
         .sort((a, b) => a.name.localeCompare(b.name));
       if (videos.length === 0) {
-        new Notice(`Drop a video into ${SOURCES_FOLDER}/Videos/ first.`); return;
+        new Notice(`Drop a video into ${videosFolder}/ first.`); return;
       }
       const picked = await pickFuzzy(this.app, videos, v => v.name, 'Pick a video file');
       if (!picked) return;
@@ -3640,14 +3146,14 @@ ${body}`;
     ];
     if (read_point !== null)         fmLines.push(`read_point: ${read_point}`);
     if (total_pages !== null)        fmLines.push(`total_pages: ${total_pages}`);
-    if (sioyek_path)                 fmLines.push(`sioyek_path: "${sioyek_path}"`);
-    if (source_url)                  fmLines.push(`source_url: "${source_url}"`);
-    if (video_url)                   fmLines.push(`video_url: "${video_url}"`);
-    if (video_id)                    fmLines.push(`video_id: "${video_id}"`);
-    if (video_path)                  fmLines.push(`video_path: "${video_path}"`);
+    if (sioyek_path)                 fmLines.push(`sioyek_path: ${JSON.stringify(sioyek_path)}`);
+    if (source_url)                  fmLines.push(`source_url: ${JSON.stringify(source_url)}`);
+    if (video_url)                   fmLines.push(`video_url: ${JSON.stringify(video_url)}`);
+    if (video_id)                    fmLines.push(`video_id: ${JSON.stringify(video_id)}`);
+    if (video_path)                  fmLines.push(`video_path: ${JSON.stringify(video_path)}`);
     if (read_point_seconds !== null) fmLines.push(`read_point_seconds: ${read_point_seconds}`);
     if (total_seconds !== null)      fmLines.push(`total_seconds: ${total_seconds}`);
-    if (author)                      fmLines.push(`author: "${author}"`);
+    if (author)                      fmLines.push(`author: ${JSON.stringify(author)}`);
     fmLines.push(`date_added: ${today}`);
     fmLines.push('tags:');
     fmLines.push('  - incremental-reading');
@@ -3664,7 +3170,11 @@ ${body}`;
     }
     body += `## Reading Notes\n\n\n## Extracts\n\n`;
 
-    const path = `${SOURCES_FOLDER}/${title}.md`;
+    const safeTitle = slugifyForFolder(title);
+    if (!safeTitle) { new Notice('Source title does not contain a valid filename.'); return; }
+    const sourcesFolder = this.sourcesFolder();
+    await ensureFolder(this.app, sourcesFolder);
+    const path = `${sourcesFolder}/${safeTitle}.md`;
     if (this.app.vault.getAbstractFileByPath(path)) {
       new Notice(`Already exists: ${path}`); return;
     }
@@ -3679,7 +3189,7 @@ ${body}`;
       new Notice('Open a clipper note first.'); return;
     }
     const existing = getFm(this.app, active);
-    if (existing?.type === 'source') { new Notice('Already an IR source.'); return; }
+    if (existing?.type === 'source') { new Notice('Already an incremental reading source.'); return; }
 
     const priStr = await askText(this.app, 'Priority (1-100, 1=highest)', '50');
     if (priStr === null) return;
@@ -3721,7 +3231,10 @@ ${body}`;
       if (!fm.tags.includes('ir/source')) fm.tags.push('ir/source');
     });
 
-    const newPath = `${SOURCES_FOLDER}/${active.name}`;
+    const sourcesFolder = this.sourcesFolder();
+    await ensureFolder(this.app, sourcesFolder);
+    const safeName = (slugifyForFolder(active.basename) || 'Untitled') + '.md';
+    const newPath = `${sourcesFolder}/${safeName}`;
     let renameNote = '';
     if (active.path === newPath) {
       // already in sources
@@ -3747,7 +3260,7 @@ ${body}`;
     const fm = getFm(this.app, active);
     if (!fm) { new Notice('No frontmatter.'); return; }
     if (fm.type !== 'source' && fm.type !== 'extract' && fm.type !== 'card') {
-      new Notice('Not an IR element.'); return;
+      new Notice('Not an incremental reading element.'); return;
     }
     const parentName = (fm.type === 'card' || fm.type === 'extract')
       ? linkTarget(fm.source) : linkTarget(fm.parent);
@@ -3787,7 +3300,7 @@ ${body}`;
     const ps = Number(fm.page_start) || null, pe = Number(fm.page_end) || null, rp = Number(fm.read_point) || null;
     let page = (rp && ps && pe) ? Math.max(ps, Math.min(rp, pe)) : (rp || ps || 1);
     const { execFile } = require('child_process');
-    execFile('/opt/homebrew/bin/sioyek', ['--page', String(page), fm.sioyek_path], (err) => {
+    execFile(this.settings.paths.sioyek, ['--page', String(page), fm.sioyek_path], (err) => {
       if (err) new Notice('Failed to open Sioyek: ' + err.message);
       else new Notice(`Opened in Sioyek at page ${page}`);
     });
@@ -3797,7 +3310,7 @@ ${body}`;
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') { new Notice('Open a markdown source.'); return; }
     const fm = getFm(this.app, active);
-    if (!fm || fm.type !== 'source') { new Notice('Not an IR source.'); return; }
+    if (!fm || fm.type !== 'source') { new Notice('Not an incremental reading source.'); return; }
     if (fm.total_pages || fm.sioyek_path) {
       new Notice('PDF/epub source — use IR Open Sioyek/PDF.'); return;
     }
@@ -3843,7 +3356,7 @@ ${body}`;
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') { new Notice('Not a markdown source.'); return; }
     const fm = getFm(this.app, active);
-    if (!fm || fm.type !== 'source') { new Notice('Not an IR source.'); return; }
+    if (!fm || fm.type !== 'source') { new Notice('Not an incremental reading source.'); return; }
     if (fm.total_pages || fm.sioyek_path) {
       new Notice('PDF/epub — use IR Open Sioyek.'); return;
     }
@@ -3872,23 +3385,22 @@ ${body}`;
   async stats() {
     const today = todayDate();
     const weekAgo = new Date(today.getTime() - 7 * 86400000);
-    const monthAgo = new Date(today.getTime() - 30 * 86400000);
     let nSrc = 0, nExt = 0, nCard = 0;
     let nDone = 0, nDismissed = 0, nInbox = 0;
     let overdue = 0, dueToday = 0, future = 0;
     let todayRev = 0, weekRev = 0;
-    let todaySrc = 0, todayExt = 0, todayCard = 0;
-    for (const f of getAllIRFiles(this.app)) {
+    let todaySrc = 0, todayExt = 0;
+    for (const f of getAllIRFiles(this.app, this.settings)) {
       const fm = getFm(this.app, f);
       if (!fm) continue;
       if (fm.type !== 'source' && fm.type !== 'extract' && fm.type !== 'card') continue;
+      if (fm.type === 'card') { nCard++; continue; }
       if (fm.status === 'done') { nDone++; continue; }
       if (fm.status === 'dismissed') { nDismissed++; continue; }
       if (fm.status === 'container') continue;
       if (fm.status === 'inbox') { nInbox++; continue; }
       if (fm.type === 'source') nSrc++;
       else if (fm.type === 'extract') nExt++;
-      else nCard++;
       const nr = parseDMY(fm.next_review);
       if (nr) {
         const diff = daysBetween(today, nr);
@@ -3902,38 +3414,28 @@ ${body}`;
           todayRev++;
           if (fm.type === 'source') todaySrc++;
           else if (fm.type === 'extract') todayExt++;
-          else todayCard++;
         }
         if (lr >= weekAgo) weekRev++;
       }
     }
 
-    let lifetime = 0, recentGrades = [];
-    const logFile = this.app.vault.getAbstractFileByPath(REVIEW_LOG_PATH);
+    let lifetime = 0;
+    const logFile = this.app.vault.getAbstractFileByPath(this.reviewLogPath());
     if (logFile) {
       const log = await this.app.vault.read(logFile);
       const rows = log.split('\n').filter(l => /^\|\s*\d{2}-\d{2}-\d{4}/.test(l));
       lifetime = rows.length;
-      for (const row of rows) {
-        const cols = row.split('|').map(c => c.trim());
-        const date = parseDMY(cols[1]);
-        const grade = parseInt(cols[4], 10);
-        if (date && date >= monthAgo && Number.isFinite(grade)) recentGrades.push(grade);
-      }
     }
-    const recall = recentGrades.filter(g => g >= 2).length;
-    const retention = recentGrades.length > 0
-      ? `${(100 * recall / recentGrades.length).toFixed(1)}% (${recall}/${recentGrades.length})` : 'n/a';
 
     const lines = [
-      '**IR Stats**', '',
-      `📊 Active: ${nSrc + nExt + nCard} (${nSrc}s / ${nExt}x / ${nCard}c)`,
+      '**Incremental Reading stats**', '',
+      `📊 Reading topics: ${nSrc + nExt} active (${nSrc}s / ${nExt}x) · ${nCard} card files`,
       `📅 Queue: 🔴 ${overdue} overdue · 🟡 ${dueToday} due today · 🟢 ${future} scheduled`,
       `📦 Inbox: ${nInbox} · ✅ Done: ${nDone} · 🚫 Dismissed: ${nDismissed}`, '',
-      `🔥 Today: ${todayRev} reviewed (${todaySrc}s / ${todayExt}x / ${todayCard}c)`,
+      `🔥 Today: ${todayRev} topics reviewed (${todaySrc}s / ${todayExt}x)`,
       `📆 Last 7 days: ${weekRev} reviewed`,
-      `🗂️ Lifetime log: ${lifetime} grades`,
-      `🎯 30d card retention: ${retention}`,
+      `🗂️ Lifetime reading log: ${lifetime} reviews`,
+      'Card scheduling and statistics are in Spaced Repetition.',
     ];
     new Notice(lines.join('\n'), 12000);
     this._dbg(lines.join('\n'));
@@ -3976,12 +3478,12 @@ ${body}`;
       const sectionBody = body.slice(h.index, next ? next.index : body.length).trimEnd();
       const interval = baseInterval + i;
       const nextReview = futureDMY(interval);
-      const noteTitle = `${parentTitle} — ${h.title}`;
+      const noteTitle = slugifyForFolder(`${parentTitle} - ${h.title}`) || `${parentTitle} - Section ${i + 1}`;
       const noteContent = `---
 type: source
 source_type: article
 status: active
-parent: "[[${parentTitle}]]"
+  parent: ${JSON.stringify(`[[${parentTitle}]]`)}
 priority: ${priority}
 next_review: ${nextReview}
 interval: ${interval}
@@ -4006,7 +3508,7 @@ ${sectionBody}
 
     const subSection = `\n## Sub-topics\n\n${links.join('\n')}\n`;
     const bodyWithoutOld = content.replace(/\n## Sub-topics[\s\S]*?(?=\n## |$)/, '');
-    await this.app.vault.modify(active, bodyWithoutOld + subSection);
+    await this.app.vault.process(active, () => bodyWithoutOld + subSection);
     await this.app.fileManager.processFrontMatter(active, (fmw) => { fmw.status = 'container'; });
     new Notice(`Split into ${selected.length} sub-topic${selected.length === 1 ? '' : 's'}.`);
   }
@@ -4047,15 +3549,16 @@ ${sectionBody}
     const sioyekPath = fm.sioyek_path ?? null;
     const totalPages = fm.total_pages ?? null;
     const dateAdded = fm.date_added ?? todayDMY();
-    const folder = SOURCES_FOLDER;
+    const folder = this.sourcesFolder();
+    await ensureFolder(this.app, folder);
     let created = 0;
     const skipped = [];
 
     for (let i = 0; i < chapters.length; i++) {
       const ch = chapters[i];
       const num = String(i + 1).padStart(2, '0');
-      const safeTitle = ch.title.replace(/[\/\\:*?"<>|]/g, '').trim();
-      const name = `${parentTitle} - Ch${num} ${safeTitle}`;
+      const safeTitle = slugifyForFolder(ch.title) || `Chapter ${i + 1}`;
+      const name = slugifyForFolder(`${parentTitle} - Ch${num} ${safeTitle}`);
       const path = `${folder}/${name}.md`;
       if (this.app.vault.getAbstractFileByPath(path)) { skipped.push(name); continue; }
 
@@ -4069,7 +3572,7 @@ type: source
 source_type: ${sourceType}
 status: active
 priority: ${priority}
-parent: "[[${parentTitle}]]"
+  parent: ${JSON.stringify(`[[${parentTitle}]]`)}
 chapter_num: ${i + 1}
 next_review: ${chNext}
 interval: ${chInterval}
@@ -4080,7 +3583,7 @@ read_point: ${ch.start}
 page_start: ${ch.start}
 page_end: ${ch.end}
 total_pages: ${totalPages}
-sioyek_path: ${sioyekPath ? '"' + sioyekPath + '"' : ''}
+  sioyek_path: ${sioyekPath ? JSON.stringify(sioyekPath) : ''}
 date_added: ${dateAdded}
 tags:
   - incremental-reading
@@ -4111,8 +3614,9 @@ tags:
       if (cur.includes('## Chapters')) return cur;
       const list = chapters.map((ch, i) => {
         const num = String(i + 1).padStart(2, '0');
-        const safeTitle = ch.title.replace(/[\/\\:*?"<>|]/g, '').trim();
-        return `- [[${parentTitle} - Ch${num} ${safeTitle}]] (p.${ch.start}–${ch.end})`;
+        const safeTitle = slugifyForFolder(ch.title) || `Chapter ${i + 1}`;
+        const name = slugifyForFolder(`${parentTitle} - Ch${num} ${safeTitle}`);
+        return `- [[${name}]] (p.${ch.start}–${ch.end})`;
       }).join('\n');
       return cur.trimEnd() + `\n\n## Chapters\n\n${list}\n`;
     });
@@ -4143,4 +3647,4 @@ function parseTimeInput(input) {
   return null;
 }
 
-module.exports = IRToolkit;
+module.exports = IncrementalReadingPlugin;

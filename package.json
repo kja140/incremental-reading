@@ -1,18 +1,23 @@
 {
-  "name": "ir-toolkit",
-  "version": "0.3.0",
-  "description": "Incremental reading and spaced repetition for Obsidian.",
+  "name": "incremental-reading",
+  "version": "1.0.0",
+  "description": "Incremental reading with scheduled topics, extracts, and Spaced Repetition flashcards.",
   "main": "main.js",
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "validate": "node scripts/validate-release.mjs",
+    "check": "node --check main.js && node --check tree-core.js && node --check spaced-repetition-core.js && npm run validate && npm test",
+    "build": "npm run check"
   },
   "keywords": [
     "obsidian",
     "incremental-reading",
     "spaced-repetition",
-    "fsrs",
     "flashcards"
   ],
   "author": "kiera",
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
 }
