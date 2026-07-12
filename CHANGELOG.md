@@ -1,5 +1,24 @@
 # Incremental Reading Toolkit changelog
 
+## 1.0.3 — 2026-07-12
+
+### Added
+- Added an easy user guide with a five-minute quickstart, recommended keybindings, everyday workflows,
+  date-format guidance, and troubleshooting.
+- Added `DD-MM-YYYY`, `MM-DD-YYYY`, and `YYYY-MM-DD` date conventions with migration of existing
+  scheduling fields, checkpoints, dashboard metadata, and review-log entries.
+- Added signed GitHub artifact attestations for release assets.
+
+### Fixed
+- Corrected invalid YAML emitted by extract, article-split, and book-split commands.
+- Markdown read-point movement now counts as progress for the stall guard.
+- Progress-aware scheduling uses the newly entered page or timestamp and respects chapter boundaries.
+- Knowledge-tree duplicate basenames remain visible and cannot be selected as ambiguous parents.
+- Due-date sorting now compares calendar dates instead of formatted strings.
+- Vault enumeration is scoped to configured plugin folders.
+- Connected the extract-bump setting, removed inactive auto-postpone controls, and made extract numbering
+  resilient to deleted files.
+
 ## 1.0.2 — 2026-07-12
 
 ### Fixed

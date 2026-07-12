@@ -43,12 +43,15 @@ Card creation writes Spaced Repetition-compatible Markdown. Card review commands
 2. Copy them into `<vault>/.obsidian/plugins/incremental-reading-toolkit/`.
 3. Install and enable **Spaced Repetition**, then reload Obsidian and enable Incremental Reading Toolkit.
 
-## Getting started
+## Quickstart
 
-1. Run **Incremental Reading Toolkit: New source** to create a source note (or import a clipping into the active note).
-2. While reading, select text and run **Incremental Reading Toolkit: Extract selection** to make an extract.
-3. Turn an extract into review material with **Incremental Reading Toolkit: Flashcard from clipboard** or **Incremental Reading Toolkit: Export inline cards to Spaced Repetition**.
-4. Use **Incremental Reading Toolkit: Next element** for reading topics and **Incremental Reading Toolkit: Review cards (Spaced Repetition)** for cards.
+1. Open an article note and run **Incremental Reading Toolkit: Import clipping (active note)**, or create a source with **New source**.
+2. Run **Next element**, read a useful portion, and create an extract from important selected text.
+3. Leave the cursor where you stopped, then run **Grade and advance** to update the read point and schedule the next visit.
+4. Create durable recall material with **Flashcard from clipboard**.
+5. Run **Review cards (Spaced Repetition)** to study cards in Spaced Repetition's UI.
+
+For recommended keybindings and step-by-step note, PDF, card, queue, and date workflows, see the [easy user guide](docs/USER-GUIDE.md).
 
 When upgrading from a pre-release development build, run **Incremental Reading Toolkit: Migrate legacy cards to Spaced Repetition** once. The migration keeps card content and source links, adds the Spaced Repetition deck tag, and removes the legacy card-scheduling fields.
 
@@ -84,16 +87,16 @@ Organise and navigate:
 
 ## Settings
 
-A-Factor behaviour, queue display, inline-card parsing patterns, Spaced Repetition separators and deck tag, vault paths, and the Sioyek executable are configurable in Incremental Reading Toolkit. Configure card algorithms and review behaviour in Spaced Repetition.
+A-Factor behaviour, queue display, date convention, inline-card parsing patterns, Spaced Repetition separators and deck tag, vault paths, and the Sioyek executable are configurable in Incremental Reading Toolkit. Configure card algorithms and review behaviour in Spaced Repetition.
 
 ## Privacy and permissions
 
 Incremental Reading Toolkit is local-first and includes no telemetry, advertisements, account requirement, or update mechanism.
 
 - **Clipboard:** Text and images are read only when you run a clipboard capture command.
-- **Files outside the vault:** The optional Sioyek integration launches the configured local executable and can open a PDF or EPUB path stored in a source note. No other external files are read or modified.
+- **Files outside the vault:** The optional Sioyek integration uses Node's `execFile` to launch only the configured local executable when you run **Open in Sioyek**. It can pass a PDF or EPUB path stored in a source note. No other external files are read or modified.
 - **Network:** The plugin does not make network requests. YouTube source notes can contain a YouTube iframe; opening that embed lets Obsidian connect to YouTube to display the video.
-- **Vault changes:** Source, extract, card, attachment, dashboard, and review-log files are created or updated only in the configured vault paths. Legacy-card migration requires confirmation.
+- **Vault access:** File enumeration is scoped to the configured source, extract, card, category, attachment, and video folders. Source, extract, card, attachment, dashboard, and review-log files are created or updated only in the configured paths. Legacy-card and date-format migrations require explicit user actions.
 
 ## Development
 

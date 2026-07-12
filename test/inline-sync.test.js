@@ -30,3 +30,17 @@ test('main.js inlined spaced-repetition block is identical to its tested core', 
     extractBlock('spaced-repetition-core.js', '// >>> spaced-repetition-core-functions', '// <<< spaced-repetition-core-functions')
   );
 });
+
+test('main.js inlined date-core block is identical to date-core.js', () => {
+  assert.equal(
+    extractBlock('main.js', '// >>> date-core-functions', '// <<< date-core-functions'),
+    extractBlock('date-core.js', '// >>> date-core-functions', '// <<< date-core-functions')
+  );
+});
+
+test('main.js inlined topic-core block is identical to topic-core.js', () => {
+  assert.equal(
+    extractBlock('main.js', '// >>> topic-core-functions', '// <<< topic-core-functions'),
+    extractBlock('topic-core.js', '// >>> topic-core-functions', '// <<< topic-core-functions')
+  );
+});

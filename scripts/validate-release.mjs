@@ -25,7 +25,10 @@ if (manifest.description.length > 250 || !manifest.description.endsWith('.')) {
 if (manifest.version !== packageJson.version) fail('package and manifest versions differ');
 if (versions[manifest.version] !== manifest.minAppVersion) fail('versions.json does not map the current release');
 
-for (const path of ['main.js', 'manifest.json', 'styles.css', 'README.md', 'LICENSE']) {
+for (const path of [
+  'main.js', 'manifest.json', 'styles.css', 'README.md', 'LICENSE',
+  'date-core.js', 'topic-core.js', 'docs/USER-GUIDE.md',
+]) {
   try {
     if (!statSync(path).isFile()) fail(`${path} is not a file`);
   } catch {
@@ -36,6 +39,14 @@ for (const path of ['main.js', 'manifest.json', 'styles.css', 'README.md', 'LICE
 const main = readFileSync('main.js', 'utf8');
 for (const unsupported of ['window.app', 'this.app.plugins', '.innerHTML', '.outerHTML', 'insertAdjacentHTML']) {
   if (main.includes(unsupported)) fail(`main.js contains unsupported API usage: ${unsupported}`);
+}
+for (const broadEnumeration of ['getMarkdownFiles()', 'getFiles()']) {
+  if (main.includes(broadEnumeration)) fail(`main.js enumerates the entire vault: ${broadEnumeration}`);
+}
+
+const releaseWorkflow = readFileSync('.github/workflows/release.yml', 'utf8');
+if (!releaseWorkflow.includes('actions/attest@v4') || !releaseWorkflow.includes('attestations: write')) {
+  fail('release workflow does not attest release assets');
 }
 
 if (!process.exitCode) console.log('Release metadata and assets are valid.');

@@ -50,6 +50,18 @@ test('buildTreeIndex puts dangling-parent elements in roots', () => {
   assert.deepEqual(idx.roots.map(p => p.basename), ['Orphan']);
 });
 
+test('buildTreeIndex keeps duplicate basenames visible and refuses ambiguous parent resolution', () => {
+  const pages = [
+    page('Sources/A/Shared.md', 'Shared', { type: 'source' }),
+    page('Sources/B/Shared.md', 'Shared', { type: 'source' }),
+    page('Extracts/Child.md', 'Child', { type: 'extract', source: '[[Shared]]' }),
+  ];
+  const idx = buildTreeIndex(pages);
+  assert.equal(idx.duplicates.has('shared'), true);
+  assert.deepEqual(idx.roots.map(p => p.path).sort(), pages.map(p => p.path).sort());
+  assert.equal(idx.childrenOf.has('shared'), false);
+});
+
 test('linkTargetName returns a bare (non-wikilink) string as-is — frontmatter may store a plain basename', () => {
   assert.equal(linkTargetName('Plain Name'), 'Plain Name');
   assert.equal(linkTargetName('[[Wiki]]'), 'Wiki');

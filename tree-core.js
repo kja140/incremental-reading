@@ -34,13 +34,18 @@ function siblingComparator(a, b) {
 // A page is a root when it has no effective parent OR its parent target is absent (dangling).
 function buildTreeIndex(pages) {
   const byName = new Map();
-  for (const p of pages) byName.set(p.basename.toLowerCase(), p);
+  const duplicates = new Set();
+  for (const p of pages) {
+    const key = p.basename.toLowerCase();
+    if (byName.has(key)) duplicates.add(key);
+    else byName.set(key, p);
+  }
   const childrenOf = new Map();
   const roots = [];
   for (const p of pages) {
     const parentName = effectiveParent(p.fm);
     const key = parentName ? parentName.toLowerCase() : null;
-    if (key && byName.has(key)) {
+    if (key && byName.has(key) && !duplicates.has(key)) {
       if (!childrenOf.has(key)) childrenOf.set(key, []);
       childrenOf.get(key).push(p);
     } else {
@@ -50,7 +55,7 @@ function buildTreeIndex(pages) {
   const cmp = siblingComparator;
   roots.sort(cmp);
   for (const arr of childrenOf.values()) arr.sort(cmp);
-  return { byName, childrenOf, roots };
+  return { pages: pages.slice(), byName, childrenOf, roots, duplicates };
 }
 
 // True if moving `childName` under `newParentName` would create a cycle.

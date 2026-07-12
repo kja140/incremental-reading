@@ -41,13 +41,18 @@ function siblingComparator(a, b) {
 // A page is a root when it has no effective parent OR its parent target is absent (dangling).
 function buildTreeIndex(pages) {
   const byName = new Map();
-  for (const p of pages) byName.set(p.basename.toLowerCase(), p);
+  const duplicates = new Set();
+  for (const p of pages) {
+    const key = p.basename.toLowerCase();
+    if (byName.has(key)) duplicates.add(key);
+    else byName.set(key, p);
+  }
   const childrenOf = new Map();
   const roots = [];
   for (const p of pages) {
     const parentName = effectiveParent(p.fm);
     const key = parentName ? parentName.toLowerCase() : null;
-    if (key && byName.has(key)) {
+    if (key && byName.has(key) && !duplicates.has(key)) {
       if (!childrenOf.has(key)) childrenOf.set(key, []);
       childrenOf.get(key).push(p);
     } else {
@@ -57,7 +62,7 @@ function buildTreeIndex(pages) {
   const cmp = siblingComparator;
   roots.sort(cmp);
   for (const arr of childrenOf.values()) arr.sort(cmp);
-  return { byName, childrenOf, roots };
+  return { pages: pages.slice(), byName, childrenOf, roots, duplicates };
 }
 
 // True if moving `childName` under `newParentName` would create a cycle.
@@ -117,6 +122,94 @@ function spacedRepetitionBody(format, question, answer, settings = {}) {
   return { nativeCardText, spacedRepetitionBody };
 })();
 
+const dateCore = (function () {
+// >>> date-core-functions
+const SUPPORTED_DATE_FORMATS = ['DD-MM-YYYY', 'MM-DD-YYYY', 'YYYY-MM-DD'];
+
+function normalizeDateFormat(format) {
+  return SUPPORTED_DATE_FORMATS.includes(format) ? format : 'DD-MM-YYYY';
+}
+
+function parseDateExact(value, format = 'DD-MM-YYYY') {
+  if (!value) return null;
+  const normalized = normalizeDateFormat(format);
+  const match = String(value).trim().match(/^(\d{2}|\d{4})-(\d{2})-(\d{2}|\d{4})$/);
+  if (!match) return null;
+  const parts = String(value).trim().split('-').map(Number);
+  let day, month, year;
+  if (normalized === 'DD-MM-YYYY') [day, month, year] = parts;
+  else if (normalized === 'MM-DD-YYYY') [month, day, year] = parts;
+  else [year, month, day] = parts;
+  if (year < 1000 || day < 1 || month < 1 || month > 12) return null;
+  const date = new Date(year, month - 1, day);
+  date.setHours(0, 0, 0, 0);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return date;
+}
+
+function parseDate(value, preferredFormat = 'DD-MM-YYYY') {
+  const preferred = normalizeDateFormat(preferredFormat);
+  for (const format of [preferred, ...SUPPORTED_DATE_FORMATS.filter(f => f !== preferred)]) {
+    const parsed = parseDateExact(value, format);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function formatDate(date, format = 'DD-MM-YYYY') {
+  const normalized = normalizeDateFormat(format);
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = String(date.getFullYear()).padStart(4, '0');
+  if (normalized === 'MM-DD-YYYY') return `${month}-${day}-${year}`;
+  if (normalized === 'YYYY-MM-DD') return `${year}-${month}-${day}`;
+  return `${day}-${month}-${year}`;
+}
+
+function reformatDate(value, fromFormat, toFormat) {
+  const parsed = parseDateExact(value, fromFormat);
+  return parsed ? formatDate(parsed, toFormat) : value;
+}
+// <<< date-core-functions
+  return { SUPPORTED_DATE_FORMATS, normalizeDateFormat, parseDateExact, parseDate, formatDate, reformatDate };
+})();
+
+const topicCore = (function () {
+// >>> topic-core-functions
+function progressAwareAFactor(fm, settings, overrides = {}) {
+  const s = settings.scheduling;
+  let remaining = null;
+  const pageTarget = Number(fm.page_end) > 0 ? Number(fm.page_end) : Number(fm.total_pages);
+  const readPoint = overrides.readPoint ?? fm.read_point;
+  const readSeconds = overrides.readPointSeconds ?? fm.read_point_seconds;
+  if (pageTarget > 0) {
+    const read = Math.max(0, Math.min(Number(readPoint) || 0, pageTarget));
+    remaining = Math.max(1, pageTarget - read);
+  } else if (Number(fm.total_seconds) > 0) {
+    const read = Math.max(0, Math.min(Number(readSeconds) || 0, Number(fm.total_seconds)));
+    remaining = Math.max(1, (Number(fm.total_seconds) - read) / 60);
+  }
+  if (remaining == null) return null;
+  const af = s.initial_af_base - s.initial_af_slope * Math.log2(remaining / s.initial_af_units_divisor);
+  return Math.max(s.a_factor_min, Math.min(s.a_factor_max, af));
+}
+
+function hasProgressAdvanced({
+  previousPage = 0,
+  nextPage = 0,
+  previousSeconds = 0,
+  nextSeconds = 0,
+  previousLine = 0,
+  nextLine = 0,
+} = {}) {
+  return Number(nextPage) > Number(previousPage)
+    || Number(nextSeconds) > Number(previousSeconds)
+    || Number(nextLine) > Number(previousLine);
+}
+// <<< topic-core-functions
+  return { progressAwareAFactor, hasProgressAdvanced };
+})();
+
 // ============================================================================
 //  Constants
 // ============================================================================
@@ -163,8 +256,6 @@ const DEFAULT_SETTINGS = {
     extract_bump: 1.05,
   },
   queue: {
-    auto_postpone_threshold: 30,
-    auto_postpone_skip_top: 10,
     sidebar_enabled: true,
     default_tag_filter: '',
     sort_key: 'urgency',
@@ -188,6 +279,7 @@ const DEFAULT_SETTINGS = {
   },
   misc: {
     debug: false,
+    date_format: 'DD-MM-YYYY',
   },
   tree: {
     expanded: [],
@@ -195,23 +287,22 @@ const DEFAULT_SETTINGS = {
   },
 };
 
-//  Date helpers (vault uses DD-MM-YYYY)
+//  Date helpers
 // ============================================================================
 
-function parseDMY(s) {
-  if (!s) return null;
-  const m = String(s).match(/^(\d{2})-(\d{2})-(\d{4})$/);
-  if (!m) return null;
-  return new Date(`${m[3]}-${m[2]}-${m[1]}T00:00:00`);
+function configuredDateFormat(settings) {
+  return dateCore.normalizeDateFormat(settings?.misc?.date_format);
 }
 
-function formatDMY(d) {
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  return `${dd}-${mm}-${d.getFullYear()}`;
+function parseDateValue(value, settings) {
+  return dateCore.parseDate(value, configuredDateFormat(settings));
 }
 
-function todayDMY() { return formatDMY(todayDate()); }
+function formatDateValue(date, settings) {
+  return dateCore.formatDate(date, configuredDateFormat(settings));
+}
+
+function todayDateString(settings) { return formatDateValue(todayDate(), settings); }
 
 function todayDate() {
   const d = new Date();
@@ -219,10 +310,10 @@ function todayDate() {
   return d;
 }
 
-function futureDMY(days) {
+function futureDateString(days, settings) {
   const d = todayDate();
   d.setDate(d.getDate() + days);
-  return formatDMY(d);
+  return formatDateValue(d, settings);
 }
 
 function daysBetween(a, b) {
@@ -238,9 +329,9 @@ function priorityToInterval(priority) {
   return Math.max(1, Math.ceil(p * 0.15));
 }
 
-function urgency(fm, today) {
+function urgency(fm, today, settings) {
   const pri = fm.priority ? (101 - fm.priority) * 10 : 0;
-  const nr = parseDMY(fm.next_review);
+  const nr = parseDateValue(fm.next_review, settings);
   if (!nr) return pri;
   const diff = daysBetween(today, nr);
   let u = pri + diff * 2;
@@ -248,16 +339,16 @@ function urgency(fm, today) {
   return u;
 }
 
-function isDue(fm, today) {
+function isDue(fm, today, settings) {
   if (!fm.next_review) return true;
-  const nr = parseDMY(fm.next_review);
+  const nr = parseDateValue(fm.next_review, settings);
   if (!nr) return true;
   return nr <= today;
 }
 
-function isPastDue(fm, today) {
+function isPastDue(fm, today, settings) {
   if (!fm.next_review) return false;
-  const nr = parseDMY(fm.next_review);
+  const nr = parseDateValue(fm.next_review, settings);
   if (!nr) return false;
   return nr < today;
 }
@@ -277,23 +368,6 @@ function isActiveIR(fm) {
 //  stay in active rotation (small a_factor) and short almost-done sources
 //  exit quickly (large a_factor). Falls back to a static a_factor when the
 //  file has no page/seconds metadata.
-
-const A_FACTOR_BUMP_EXTRACT = 1.05;  // retained — fired on extract creation only.
-
-function progressAwareAFactor(fm, settings) {
-  const s = settings.scheduling;
-  let remaining = null;
-  if (Number(fm.total_pages) > 0) {
-    const read = Math.max(0, Math.min(Number(fm.read_point) || 0, Number(fm.total_pages)));
-    remaining = Math.max(1, Number(fm.total_pages) - read);
-  } else if (Number(fm.total_seconds) > 0) {
-    const read = Math.max(0, Math.min(Number(fm.read_point_seconds) || 0, Number(fm.total_seconds)));
-    remaining = Math.max(1, (Number(fm.total_seconds) - read) / 60);
-  }
-  if (remaining == null) return null;
-  const af = s.initial_af_base - s.initial_af_slope * Math.log2(remaining / s.initial_af_units_divisor);
-  return Math.max(s.a_factor_min, Math.min(s.a_factor_max, af));
-}
 
 function clampAFactor(settings, x) {
   const s = settings.scheduling;
@@ -791,10 +865,6 @@ function configuredPath(settings, key, fallback) {
   return normalizePath(value);
 }
 
-function pathIsInside(filePath, folderPath) {
-  return filePath === folderPath || filePath.startsWith(folderPath + '/');
-}
-
 function getAllIRFiles(app, settings) {
   const folders = [
     configuredPath(settings, 'sources', SOURCES_FOLDER),
@@ -802,7 +872,25 @@ function getAllIRFiles(app, settings) {
     configuredPath(settings, 'cards', CARDS_FOLDER),
     CATEGORIES_FOLDER,
   ];
-  return app.vault.getMarkdownFiles().filter(f => folders.some(folder => pathIsInside(f.path, folder)));
+  const files = new Map();
+  for (const folder of folders) {
+    for (const file of filesInFolder(app, folder)) {
+      if (file.extension === 'md') files.set(file.path, file);
+    }
+  }
+  return Array.from(files.values());
+}
+
+function filesInFolder(app, folderPath) {
+  const root = app.vault.getAbstractFileByPath(normalizePath(folderPath));
+  if (!root) return [];
+  const out = [];
+  const visit = (node) => {
+    if (node instanceof TFile) { out.push(node); return; }
+    if (Array.isArray(node.children)) for (const child of node.children) visit(child);
+  };
+  visit(root);
+  return out;
 }
 
 function getEditorForFile(app, file) {
@@ -816,6 +904,12 @@ function frontmatterEndOffset(content) {
   if (!content.startsWith('---\n')) return 0;
   const second = content.indexOf('\n---\n', 4);
   return second === -1 ? 0 : second + 5;
+}
+
+function markerLineNumber(content) {
+  const match = String(content).match(/(?:📍\s*)?<!--ir-readpoint-->/);
+  if (!match) return 0;
+  return (content.slice(0, match.index).match(/\n/g) || []).length + 1;
 }
 
 // Sanitize basename → safe folder name (strip path-illegal chars, collapse ws).
@@ -861,7 +955,7 @@ async function ensureFolder(app, path) {
 }
 
 // Resolve source TFile + fm from active. Returns { tfile, fm } or null.
-async function resolveSourceFromActive(app) {
+async function resolveSourceFromActive(app, settings) {
   const active = app.workspace.getActiveFile();
   if (!active) { new Notice('No active file.'); return null; }
 
@@ -887,7 +981,8 @@ async function resolveSourceFromActive(app) {
   //   3. explicit pdf_vault_path field (preferred for PDF++-only sources)
   const vaultRel = active.path;
   const candidates = [];
-  for (const f of app.vault.getMarkdownFiles()) {
+  for (const f of filesInFolder(app, configuredPath(settings, 'sources', SOURCES_FOLDER))) {
+    if (f.extension !== 'md') continue;
     const fm = getFm(app, f);
     if (fm?.type !== 'source') continue;
     const sioyek = fm.sioyek_path;
@@ -933,7 +1028,7 @@ async function resolveSourceFromActive(app) {
 // its `source` frontmatter link up to the parent source/extract. Used by
 // element-creation commands (extract / flashcard / image-extract) so they
 // work when invoked from inside a card during review.
-async function resolveSourceOrExtractFromActive(app) {
+async function resolveSourceOrExtractFromActive(app, settings) {
   const active = app.workspace.getActiveFile();
   if (!active) { new Notice('No active file.'); return null; }
 
@@ -947,7 +1042,7 @@ async function resolveSourceOrExtractFromActive(app) {
       if (!m) { new Notice('Card has no source link.'); return null; }
       const parentName = m[1].trim();
       const parentTf = app.metadataCache.getFirstLinkpathDest(parentName, active.path)
-        || app.vault.getMarkdownFiles().find(f => f.basename === parentName);
+        || getAllIRFiles(app, settings).find(f => f.basename === parentName);
       if (!parentTf) { new Notice(`Parent not found: ${parentName}`); return null; }
       const parentFm = getFm(app, parentTf);
       if (!parentFm || (parentFm.type !== 'source' && parentFm.type !== 'extract')) {
@@ -959,14 +1054,14 @@ async function resolveSourceOrExtractFromActive(app) {
     return null;
   }
 
-  if (active.extension === 'pdf') return await resolveSourceFromActive(app);
+  if (active.extension === 'pdf') return await resolveSourceFromActive(app, settings);
   new Notice('Active file must be an incremental reading element or PDF.');
   return null;
 }
 
 // Resolve any IR element from active (source / extract / card). Falls back
 // to source-resolution when active is a PDF.
-async function resolveIRFromActive(app, { allowCard = true, allowPdfFallback = true } = {}) {
+async function resolveIRFromActive(app, settings, { allowCard = true, allowPdfFallback = true } = {}) {
   const active = app.workspace.getActiveFile();
   if (!active) { new Notice('No active file.'); return null; }
   if (active.extension === 'md') {
@@ -979,23 +1074,28 @@ async function resolveIRFromActive(app, { allowCard = true, allowPdfFallback = t
     return { tfile: active, fm };
   }
   if (active.extension === 'pdf' && allowPdfFallback) {
-    return await resolveSourceFromActive(app);
+    return await resolveSourceFromActive(app, settings);
   }
   new Notice('Active file must be an incremental reading element or linked PDF.');
   return null;
 }
 
 // BFS subtree walk via parent + source links.
-function walkSubtree(app, rootBasename, rootPath, { includeCards = true } = {}) {
-  const allPages = app.vault.getMarkdownFiles()
+function walkSubtree(app, settings, rootBasename, rootPath, { includeCards = true } = {}) {
+  const allPages = getAllIRFiles(app, settings)
     .map(f => ({ tfile: f, fm: getFm(app, f) }))
     .filter(p => p.fm && (p.fm.type === 'source' || p.fm.type === 'extract' || (includeCards && p.fm.type === 'card')));
   const paths = new Set([rootPath]);
   const frontier = [rootBasename];
-  const MAX = 6;
-  for (let d = 0; d < MAX && frontier.length; d++) {
+  const basenameCounts = new Map();
+  for (const page of allPages) {
+    const key = page.tfile.basename.toLowerCase();
+    basenameCounts.set(key, (basenameCounts.get(key) || 0) + 1);
+  }
+  while (frontier.length) {
     const next = [];
     for (const name of frontier) {
+      if ((basenameCounts.get(name.toLowerCase()) || 0) > 1) continue;
       for (const p of allPages) {
         if (paths.has(p.tfile.path)) continue;
         if (linkPointsTo(p.fm.parent, name) || linkPointsTo(p.fm.source, name)) {
@@ -1128,7 +1228,7 @@ class IRQueueView extends ItemView {
       const row = { tfile: file, file, fm };
       if (fm.status === 'pending' || fm.status === 'inbox') groups.newItems.push(row);
       else if (!fm.next_review) groups.active.push(row);
-      else if (isPastDue(fm, today)) groups.overdue.push(row);
+      else if (isPastDue(fm, today, this.plugin.settings)) groups.overdue.push(row);
     }
 
     // 3. Apply filter to session rows too; normalize so r.file is always populated.
@@ -1141,8 +1241,12 @@ class IRQueueView extends ItemView {
     const sortKey = this.plugin.settings.queue.sort_key;
     const sortFn = (a, b) => {
       if (sortKey === 'priority') return (a.fm.priority ?? 50) - (b.fm.priority ?? 50);
-      if (sortKey === 'due_date') return (a.fm.next_review || '').localeCompare(b.fm.next_review || '');
-      return urgency(b.fm, today) - urgency(a.fm, today);
+      if (sortKey === 'due_date') {
+        const ad = parseDateValue(a.fm.next_review, this.plugin.settings);
+        const bd = parseDateValue(b.fm.next_review, this.plugin.settings);
+        return (ad?.getTime() ?? Infinity) - (bd?.getTime() ?? Infinity);
+      }
+      return urgency(b.fm, today, this.plugin.settings) - urgency(a.fm, today, this.plugin.settings);
     };
     groups.overdue.sort(sortFn);
     groups.newItems.sort(sortFn);
@@ -1282,10 +1386,6 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
     new Setting(sec).setName('Queue').setHeading();
     const s = this.plugin.settings.queue;
     const save = () => this.plugin.saveSettings();
-    new Setting(sec).setName('Auto-postpone threshold')
-      .addText(t => t.setValue(String(s.auto_postpone_threshold)).onChange(v => { s.auto_postpone_threshold = Number(v) || 30; save(); }));
-    new Setting(sec).setName('Skip top N priorities')
-      .addText(t => t.setValue(String(s.auto_postpone_skip_top)).onChange(v => { s.auto_postpone_skip_top = Number(v) || 10; save(); }));
     new Setting(sec).setName('Sidebar enabled')
       .addToggle(t => t.setValue(s.sidebar_enabled).onChange(v => { s.sidebar_enabled = v; save(); }));
     new Setting(sec).setName('Default tag filter')
@@ -1360,6 +1460,23 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
     new Setting(sec).setName('Advanced').setHeading();
     const s = this.plugin.settings.misc;
     const save = () => this.plugin.saveSettings();
+    new Setting(sec).setName('Date format')
+      .setDesc('Used for scheduling fields, prompts, checkpoints, and the review log.')
+      .addDropdown(d => {
+        for (const format of dateCore.SUPPORTED_DATE_FORMATS) d.addOption(format, format);
+        d.setValue(configuredDateFormat(this.plugin.settings)).onChange(async (value) => {
+          const previous = configuredDateFormat(this.plugin.settings);
+          if (previous === value) return;
+          try {
+            const changed = await this.plugin.migrateDateFormat(previous, value);
+            s.date_format = value;
+            await save();
+            new Notice(`Date format changed to ${value}; migrated ${changed} stored date${changed === 1 ? '' : 's'}.`);
+          } catch (error) {
+            new Notice(`Date migration failed: ${error.message}`);
+          }
+        });
+      });
     new Setting(sec).setName('Debug logging')
       .addToggle(t => t.setValue(s.debug).onChange(v => { s.debug = v; save(); }));
   }
@@ -1452,7 +1569,7 @@ class KnowledgeTreeView extends ItemView {
       return tagStr.toLowerCase().includes(f);
     };
     const keep = new Set();
-    for (const p of this.index.byName.values()) {
+    for (const p of this.index.pages) {
       if (!matches(p)) continue;
       let cur = p;
       const guard = new Set();
@@ -1529,7 +1646,7 @@ class KnowledgeTreeView extends ItemView {
   _setExpandAll(on) {
     if (!on) { this.plugin.settings.tree.expanded = []; this.plugin.saveSettings(); return; }
     const keys = ['::unfiled::'];
-    for (const p of this.index.byName.values()) {
+    for (const p of this.index.pages) {
       if ((this.index.childrenOf.get(p.basename.toLowerCase()) || []).length) keys.push(p.path);
     }
     this.plugin.settings.tree.expanded = keys;
@@ -1742,9 +1859,8 @@ class IncrementalReadingPlugin extends Plugin {
     await ensureFolder(this.app, folder);
     const parentTitle = parentFile.basename;
     const safeParent = slugifyForFolder(parentTitle) || 'Untitled';
-    const existing = this.app.vault.getMarkdownFiles().filter(f =>
-      pathIsInside(f.path, folder) && f.basename.startsWith(safeParent + ' - Card')
-    );
+    const existing = filesInFolder(this.app, folder).filter(f =>
+      f.extension === 'md' && f.basename.startsWith(safeParent + ' - Card'));
     let cardNum = existing.length + 1;
     let name = `${safeParent} - Card ${cardNum}`;
     while (this.app.vault.getAbstractFileByPath(`${folder}/${name}.md`)) {
@@ -1754,7 +1870,7 @@ class IncrementalReadingPlugin extends Plugin {
       '---',
       'type: card',
       `source: ${JSON.stringify(`[[${parentTitle}]]`)}`,
-      `date_added: ${todayDMY()}`,
+      `date_added: ${todayDateString(this.settings)}`,
       `card_format: ${format}`,
       'ir_spaced_repetition: true',
       ...extraFrontmatter,
@@ -1773,8 +1889,8 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   _legacyCardFiles() {
-    return this.app.vault.getMarkdownFiles().filter(file => {
-      if (!pathIsInside(file.path, this.cardsFolder())) return false;
+    return filesInFolder(this.app, this.cardsFolder()).filter(file => {
+      if (file.extension !== 'md') return false;
       const fm = getFm(this.app, file);
       const tags = Array.isArray(fm?.tags)
         ? fm.tags.map(String)
@@ -1861,6 +1977,44 @@ class IncrementalReadingPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
+  async migrateDateFormat(fromFormat, toFormat) {
+    const keys = ['next_review', 'last_reviewed', 'date_added', 'date_dismissed', 'today_session_date'];
+    const files = new Map(getAllIRFiles(this.app, this.settings).map(file => [file.path, file]));
+    const dashboard = this.app.vault.getAbstractFileByPath(DASHBOARD_PATH);
+    if (dashboard instanceof TFile) files.set(dashboard.path, dashboard);
+    let changed = 0;
+    for (const file of files.values()) {
+      if (!getFm(this.app, file)) continue;
+      await this.app.fileManager.processFrontMatter(file, (fm) => {
+        for (const key of keys) {
+          if (!fm[key]) continue;
+          const next = dateCore.reformatDate(fm[key], fromFormat, toFormat);
+          if (next !== fm[key]) { fm[key] = next; changed++; }
+        }
+        if (Array.isArray(fm.checkpoints)) {
+          for (const checkpoint of fm.checkpoints) {
+            if (!checkpoint?.date) continue;
+            const next = dateCore.reformatDate(checkpoint.date, fromFormat, toFormat);
+            if (next !== checkpoint.date) { checkpoint.date = next; changed++; }
+          }
+        }
+      });
+    }
+    const logFile = this.app.vault.getAbstractFileByPath(this.reviewLogPath());
+    if (logFile instanceof TFile) {
+      await this.app.vault.process(logFile, (content) => content.split('\n').map(line => {
+        const match = line.match(/^(\|\s*)([^|]+?)(\s*\|)/);
+        if (!match) return line;
+        const value = match[2].trim();
+        const next = dateCore.reformatDate(value, fromFormat, toFormat);
+        if (next === value) return line;
+        changed++;
+        return match[1] + next + match[3] + line.slice(match[0].length);
+      }).join('\n'));
+    }
+    return changed;
+  }
+
   // Debug logging — silent unless the user enables it in settings. Keeps the
   // default console clean (Obsidian guideline: only errors by default).
   _dbg(...args) {
@@ -1877,7 +2031,7 @@ class IncrementalReadingPlugin extends Plugin {
       if (skipCurrent && active && f.path === active.path) continue;
       const fm = getFm(this.app, f);
       if (!isActiveIR(fm) || fm.type === 'card') continue;
-      if (!isDue(fm, today)) continue;
+      if (!isDue(fm, today, this.settings)) continue;
       out.push({ tfile: f, fm });
     }
     return out;
@@ -1890,7 +2044,7 @@ class IncrementalReadingPlugin extends Plugin {
     const dash = this.app.vault.getAbstractFileByPath(DASHBOARD_PATH);
     if (!dash) return null;
     const fm = getFm(this.app, dash);
-    const todayStr = todayDMY();
+    const todayStr = todayDateString(this.settings);
     if (!fm || fm.today_session_date !== todayStr) return null;
     const paths = fm.today_session_paths;
     if (!Array.isArray(paths) || paths.length === 0) return null;
@@ -1906,7 +2060,7 @@ class IncrementalReadingPlugin extends Plugin {
       const f = getFm(this.app, tf);
       if (!isActiveIR(f)) continue;
       if (f.last_reviewed === todayStr) continue;
-      if (!isDue(f, today)) continue;
+      if (!isDue(f, today, this.settings)) continue;
       out.push({ tfile: tf, fm: f });
     }
     return out;
@@ -1920,7 +2074,7 @@ class IncrementalReadingPlugin extends Plugin {
     try {
       await this.app.fileManager.processFrontMatter(dash, (fm) => {
         fm.today_session_paths = paths;
-        fm.today_session_date = todayDMY();
+        fm.today_session_date = todayDateString(this.settings);
       });
     } catch (e) {
       console.error('[IR] persistSessionSnapshot failed', e);
@@ -1928,7 +2082,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   buildInterleavedQueue(pool, today) {
-    return pool.slice().sort((a, b) => urgency(b.fm, today) - urgency(a.fm, today));
+    return pool.slice().sort((a, b) => urgency(b.fm, today, this.settings) - urgency(a.fm, today, this.settings));
   }
 
   async nextElement() {
@@ -1982,7 +2136,7 @@ class IncrementalReadingPlugin extends Plugin {
       new Notice('Active note is not an incremental reading element.');
       return;
     }
-    const today = todayDMY();
+    const today = todayDateString(this.settings);
 
     if (fm.type === 'card') {
       this.reviewCardsInNote();
@@ -1994,6 +2148,8 @@ class IncrementalReadingPlugin extends Plugin {
   async _gradeTopic(file, fm, today) {
     let newReadPoint = fm.read_point;
     let newReadPointSeconds = fm.read_point_seconds;
+    let previousReadPointLine = Number(fm.read_point_line) || 0;
+    let newReadPointLine = previousReadPointLine;
     const isVideo = fm.type === 'source'
       && (fm.source_type === 'youtube' || fm.source_type === 'video' || fm.read_point_seconds != null);
     if (fm.type === 'source' && fm.read_point != null && !isVideo) {
@@ -2011,11 +2167,15 @@ class IncrementalReadingPlugin extends Plugin {
 
     const isMarkdownSource = fm.type === 'source' && !fm.total_pages && !fm.sioyek_path;
     if (isMarkdownSource) {
+      const currentContent = await this.app.vault.cachedRead(file);
+      if (!previousReadPointLine) previousReadPointLine = markerLineNumber(currentContent);
+      if (!newReadPointLine) newReadPointLine = previousReadPointLine;
       const editor = getEditorForFile(this.app, file);
       const cursor = editor?.getCursor?.();
       if (editor && cursor) {
         const updateMarker = await confirmDialog(this.app, `Update 📍 to line ${cursor.line + 1}?`);
         if (updateMarker) {
+          newReadPointLine = cursor.line + 1;
           await this.app.vault.process(file, (content) => {
             const fmEnd = frontmatterEndOffset(content);
             const lines = content.split('\n');
@@ -2045,7 +2205,10 @@ class IncrementalReadingPlugin extends Plugin {
     const prevReadSeconds = Number(fm.read_point_seconds) || 0;
 
     const priorAFactor = readAFactor(this.settings, fm);
-    const progressAF = s.progress_aware ? progressAwareAFactor(fm, this.settings) : null;
+    const progressAF = s.progress_aware ? topicCore.progressAwareAFactor(fm, this.settings, {
+      readPoint: newReadPoint,
+      readPointSeconds: newReadPointSeconds,
+    }) : null;
     const baseAF = progressAF != null ? progressAF : priorAFactor;
 
     const qualityFactor = await pickFromList(
@@ -2056,9 +2219,8 @@ class IncrementalReadingPlugin extends Plugin {
       [s.quality_hold, s.quality_speed_up, s.quality_slow_down],
       'Topic quality?'
     );
-    const aFactor = qualityFactor != null
-      ? clampAFactor(this.settings, baseAF * qualityFactor)
-      : baseAF;
+    if (qualityFactor == null) return;
+    const aFactor = clampAFactor(this.settings, baseAF * qualityFactor);
 
     const priorReps = fm.review_count ?? 0;
     const reviewCount = priorReps + 1;
@@ -2070,15 +2232,18 @@ class IncrementalReadingPlugin extends Plugin {
 
     // Stall guard: no growth if read_point did not advance.
     if (s.stall_guard && !isFirstRep) {
-      const newReadPointVal = newReadPoint ?? prevReadPoint;
-      const newReadSecondsVal = newReadPointSeconds ?? prevReadSeconds;
-      const advanced =
-        (Number.isFinite(newReadPointVal) && newReadPointVal > prevReadPoint) ||
-        (Number.isFinite(newReadSecondsVal) && newReadSecondsVal > prevReadSeconds);
+      const advanced = topicCore.hasProgressAdvanced({
+        previousPage: prevReadPoint,
+        nextPage: newReadPoint ?? prevReadPoint,
+        previousSeconds: prevReadSeconds,
+        nextSeconds: newReadPointSeconds ?? prevReadSeconds,
+        previousLine: previousReadPointLine,
+        nextLine: newReadPointLine,
+      });
       if (!advanced) interval = Math.min(interval, Number(fm.interval) || interval);
     }
 
-    const nextReview = futureDMY(interval);
+    const nextReview = futureDateString(interval, this.settings);
 
     await this.app.fileManager.processFrontMatter(file, (fmw) => {
       fmw.interval = interval;
@@ -2088,6 +2253,7 @@ class IncrementalReadingPlugin extends Plugin {
       fmw.a_factor = round4(aFactor);
       if (newReadPoint !== undefined && newReadPoint !== null) fmw.read_point = newReadPoint;
       if (newReadPointSeconds !== undefined && newReadPointSeconds !== null) fmw.read_point_seconds = newReadPointSeconds;
+      if (newReadPointLine > 0) fmw.read_point_line = newReadPointLine;
       if (fmw.status === 'inbox' || fmw.status === 'pending') fmw.status = 'active';
       for (const k of ['stability', 'difficulty', 'last_grade', 'last_retrievability', 'ease']) {
         if (fmw[k] !== undefined) delete fmw[k];
@@ -2115,8 +2281,8 @@ class IncrementalReadingPlugin extends Plugin {
     const logFile = this.app.vault.getAbstractFileByPath(this.reviewLogPath());
     if (logFile) {
       const elapsedDays = (() => {
-        const lr = parseDMY(fm.last_reviewed);
-        const tdy = parseDMY(today);
+        const lr = parseDateValue(fm.last_reviewed, this.settings);
+        const tdy = parseDateValue(today, this.settings);
         return (lr && tdy) ? Math.max(0, Math.round((tdy - lr) / 86400000)) : 0;
       })();
       const row = `| ${today} | [[${file.basename}]] | ${fm.type} | — | ${elapsedDays} |  |  |  | ${round4(priorAFactor)} | ${round4(aFactor)} |\n`;
@@ -2192,10 +2358,8 @@ class IncrementalReadingPlugin extends Plugin {
     this.saveSettings();
   }
 
-  // Build the tree index from every IR element. Limitation: nodes are keyed by
-  // basename (case-insensitive), so two IR files sharing a basename in different
-  // folders collide — the last one wins. Basenames are unique in practice; revisit
-  // with path-based resolution if that stops holding.
+  // Build the tree index from every IR element. Duplicate basenames stay visible
+  // as roots and cannot be used as parents until the user gives them unique names.
   buildTreeIndex() {
     const pages = [];
     for (const f of getAllIRFiles(this.app, this.settings)) {
@@ -2228,6 +2392,9 @@ class IncrementalReadingPlugin extends Plugin {
     const child = this.app.vault.getAbstractFileByPath(childPath);
     if (!child) { new Notice('Node not found'); return; }
     const idx = this.buildTreeIndex();
+    if (newParentName && idx.duplicates.has(newParentName.toLowerCase())) {
+      new Notice(`Refused: more than one node is named "${newParentName}"`); return;
+    }
     if (newParentName && treeCore.wouldCreateCycle(idx, child.basename, newParentName)) {
       new Notice('Refused: would create a cycle'); return;
     }
@@ -2252,7 +2419,8 @@ class IncrementalReadingPlugin extends Plugin {
       new Notice('Active note is not an incremental reading element'); return;
     }
     const idx = this.buildTreeIndex();
-    const candidates = [...idx.byName.values()].filter(p => p.fm.type !== 'card' && p.path !== active.path);
+    const candidates = idx.pages.filter(p =>
+      p.fm.type !== 'card' && p.path !== active.path && !idx.duplicates.has(p.basename.toLowerCase()));
     const displays = candidates.map(p => `${TREE_ICONS[p.fm.type] || '•'} ${p.basename}`);
     const values = candidates.map(p => p.basename);
     displays.unshift('⤴ (top level / Unfiled)');
@@ -2342,8 +2510,8 @@ class IncrementalReadingPlugin extends Plugin {
       if (!grouped.has(key)) grouped.set(key, card);
     }
     const existingIds = new Set();
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      if (!pathIsInside(file.path, this.cardsFolder())) continue;
+    for (const file of filesInFolder(this.app, this.cardsFolder())) {
+      if (file.extension !== 'md') continue;
       const id = getFm(this.app, file)?.ir_inline_id;
       if (id) existingIds.add(String(id));
     }
@@ -2401,14 +2569,14 @@ class IncrementalReadingPlugin extends Plugin {
     await this.app.fileManager.processFrontMatter(active, (fm) => {
       fm.checkpoints = fm.checkpoints || [];
       fm.checkpoints.push({
-        date: todayDMY(),
+        date: todayDateString(this.settings),
         line,
         note: cleanNote,
         ...(fm.type === 'source' && fm.read_point_seconds != null ? { read_point_seconds: fm.read_point_seconds } : {}),
       });
       if (interval != null) {
         fm.interval = interval;
-        fm.next_review = futureDMY(interval);
+        fm.next_review = futureDateString(interval, this.settings);
       }
     });
 
@@ -2418,7 +2586,7 @@ class IncrementalReadingPlugin extends Plugin {
   // ---- Done / Dismiss / Postpone / Schedule ------------------------------
 
   async markDone() {
-    const r = await resolveIRFromActive(this.app, { allowCard: false, allowPdfFallback: true });
+    const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const { tfile, fm } = r;
     if (fm.status === 'done') { new Notice('Already done.'); return; }
@@ -2426,25 +2594,25 @@ class IncrementalReadingPlugin extends Plugin {
     if (!(await confirmDialog(this.app, `Mark ${labels[fm.type]} as done?`))) return;
     await this.app.fileManager.processFrontMatter(tfile, (fmw) => {
       fmw.status = 'done';
-      fmw.last_reviewed = todayDMY();
+      fmw.last_reviewed = todayDateString(this.settings);
     });
     new Notice(`${labels[fm.type]} marked done.`);
   }
 
   async dismiss() {
-    const r = await resolveIRFromActive(this.app, { allowCard: false, allowPdfFallback: true });
+    const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const { tfile, fm } = r;
     if (fm.status === 'dismissed') { new Notice('Already dismissed.'); return; }
     await this.app.fileManager.processFrontMatter(tfile, (fmw) => {
       fmw.status = 'dismissed';
-      fmw.date_dismissed = todayDMY();
+      fmw.date_dismissed = todayDateString(this.settings);
     });
     new Notice('Dismissed. Set status: active to restore.');
   }
 
   async postpone() {
-    const r = await resolveIRFromActive(this.app, { allowCard: false, allowPdfFallback: true });
+    const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const choice = await pickFromList(
       this.app,
@@ -2453,7 +2621,7 @@ class IncrementalReadingPlugin extends Plugin {
       'Postpone how long?'
     );
     if (!choice) return;
-    const newDate = futureDMY(choice);
+    const newDate = futureDateString(choice, this.settings);
     await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => {
       fmw.next_review = newDate;
       fmw.interval = choice;
@@ -2462,31 +2630,25 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async schedule() {
-    const r = await resolveIRFromActive(this.app, { allowCard: false, allowPdfFallback: true });
+    const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const cur = r.fm.next_review || '(unscheduled)';
-    const raw = await askText(this.app, `Schedule (DD-MM-YYYY or +Nd/-Nd; current: ${cur})`, '');
+    const dateFormat = configuredDateFormat(this.settings);
+    const raw = await askText(this.app, `Schedule (${dateFormat} or +Nd/-Nd; current: ${cur})`, '');
     if (!raw || raw.trim() === '') return;
     const input = raw.trim();
 
     let newDate = null;
     const offset = input.match(/^([+-]?)(\d+)\s*d?$/i);
-    const dateM = input.match(/^(\d{2})-(\d{2})-(\d{4})$/);
     if (offset) {
       const sign = offset[1] === '-' ? -1 : 1;
-      newDate = futureDMY(sign * parseInt(offset[2], 10));
-    } else if (dateM) {
-      const [, dd, mm, yyyy] = dateM;
-      const probe = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
-      if (isNaN(probe.getTime()) || formatDMY(probe) !== `${dd}-${mm}-${yyyy}`) {
-        new Notice(`Invalid date: ${input}`); return;
-      }
-      newDate = `${dd}-${mm}-${yyyy}`;
+      newDate = futureDateString(sign * parseInt(offset[2], 10), this.settings);
     } else {
-      new Notice(`Couldn't parse: "${input}".`); return;
+      const parsed = dateCore.parseDateExact(input, dateFormat);
+      if (!parsed) { new Notice(`Invalid ${dateFormat} date: ${input}`); return; }
+      newDate = formatDateValue(parsed, this.settings);
     }
-    const oldParsed = parseDMY(r.fm.next_review);
-    const newParsed = parseDMY(newDate);
+    const newParsed = parseDateValue(newDate, this.settings);
     const newInterval = newParsed ? Math.max(1, Math.round((newParsed - todayDate()) / 86400000)) : null;
     await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => {
       fmw.next_review = newDate;
@@ -2498,7 +2660,7 @@ class IncrementalReadingPlugin extends Plugin {
   // ---- Set Priority / Boost ---------------------------------------------
 
   async setPriority() {
-    const r = await resolveIRFromActive(this.app, { allowCard: false, allowPdfFallback: true });
+    const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const cur = r.fm.priority ?? 50;
     const raw = await askText(this.app, 'New priority (1-100, 1=highest)', String(cur));
@@ -2510,7 +2672,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async boost() {
-    const r = await resolveIRFromActive(this.app, { allowCard: false, allowPdfFallback: true });
+    const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const amount = await pickFromList(
       this.app,
@@ -2538,7 +2700,7 @@ class IncrementalReadingPlugin extends Plugin {
 
     let cascaded = 0;
     if (cascade) {
-      const subtree = walkSubtree(this.app, r.tfile.basename, r.tfile.path);
+      const subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path);
       for (const p of subtree) {
         if (p.tfile.path === r.tfile.path) continue;
         if (p.fm.type === 'card') continue;
@@ -2560,7 +2722,7 @@ class IncrementalReadingPlugin extends Plugin {
   // ---- Subset Review / Mercy / Postpone Subtree --------------------------
 
   async subsetReview() {
-    const r = await resolveSourceFromActive(this.app);
+    const r = await resolveSourceFromActive(this.app, this.settings);
     if (!r) return;
     const filter = await pickFromList(
       this.app,
@@ -2571,15 +2733,15 @@ class IncrementalReadingPlugin extends Plugin {
     if (!filter) return;
 
     const today = todayDate();
-    let subset = walkSubtree(this.app, r.tfile.basename, r.tfile.path, { includeCards: false })
+    let subset = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, { includeCards: false })
       .filter(p => p.tfile.path !== r.tfile.path);
-    if (filter === 'due') subset = subset.filter(p => isDue(p.fm, today));
+    if (filter === 'due') subset = subset.filter(p => isDue(p.fm, today, this.settings));
     subset = subset.filter(p => p.fm.status !== 'done' && p.fm.status !== 'container' && p.fm.status !== 'dismissed');
     if (subset.length === 0) { new Notice(`No descendants match.`); return; }
 
-    subset.sort((a, b) => urgency(b.fm, today) - urgency(a.fm, today));
+    subset.sort((a, b) => urgency(b.fm, today, this.settings) - urgency(a.fm, today, this.settings));
     const statusIcon = (fm) => {
-      const nr = parseDMY(fm.next_review);
+      const nr = parseDateValue(fm.next_review, this.settings);
       if (!nr) return '⚪';
       const off = daysBetween(today, nr);
       return off > 0 ? '🔴' : (off === 0 ? '🟡' : '🟢');
@@ -2589,7 +2751,7 @@ class IncrementalReadingPlugin extends Plugin {
       subset,
       p => {
         const t = p.fm.type === 'source' ? '📖' : '📝';
-        return `${t} ${statusIcon(p.fm)} p${p.fm.priority ?? '—'} u${urgency(p.fm, today).toFixed(0)}  ${p.tfile.basename}`;
+        return `${t} ${statusIcon(p.fm)} p${p.fm.priority ?? '—'} u${urgency(p.fm, today, this.settings).toFixed(0)}  ${p.tfile.basename}`;
       },
       `Subset (${r.tfile.basename})`
     );
@@ -2607,16 +2769,16 @@ class IncrementalReadingPlugin extends Plugin {
     for (const f of getAllIRFiles(this.app, this.settings)) {
       const fm = getFm(this.app, f);
       if (!isActiveIR(fm) || fm.type === 'card') continue;
-      if (!isPastDue(fm, today)) continue;
+      if (!isPastDue(fm, today, this.settings)) continue;
       overdue.push({ tfile: f, fm });
     }
     if (overdue.length === 0) { new Notice('Nothing overdue.'); return; }
-    overdue.sort((a, b) => urgency(b.fm, today) - urgency(a.fm, today));
+    overdue.sort((a, b) => urgency(b.fm, today, this.settings) - urgency(a.fm, today, this.settings));
     let updated = 0;
     for (let rank = 0; rank < overdue.length; rank++) {
       const off = Math.floor(rank * choice / overdue.length);
       const d = new Date(today.getTime()); d.setDate(d.getDate() + off);
-      const newDate = formatDMY(d);
+      const newDate = formatDateValue(d, this.settings);
       await this.app.fileManager.processFrontMatter(overdue[rank].tfile, (fmw) => { fmw.next_review = newDate; fmw.interval = Math.max(1, off); });
       updated++;
     }
@@ -2624,7 +2786,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async postponeSubtree() {
-    const r = await resolveSourceFromActive(this.app);
+    const r = await resolveSourceFromActive(this.app, this.settings);
     if (!r) return;
     const choice = await pickFromList(
       this.app,
@@ -2633,24 +2795,20 @@ class IncrementalReadingPlugin extends Plugin {
       'Postpone subtree by'
     );
     if (!choice) return;
-    const subtree = walkSubtree(this.app, r.tfile.basename, r.tfile.path);
+    const subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path);
     let postponed = 0;
     for (const p of subtree) {
       const fm = p.fm;
       if (fm.type === 'card') continue;
       if (fm.status === 'done' || fm.status === 'container' || fm.status === 'dismissed') continue;
-      let baseDate = todayDMY();
+      let baseDate = todayDateString(this.settings);
       if (fm.next_review) {
-        const dm = String(fm.next_review).match(/^(\d{2})-(\d{2})-(\d{4})$/);
-        if (dm) {
-          const iso = `${dm[3]}-${dm[2]}-${dm[1]}`;
-          const todayIso = formatDMY(todayDate()).split('-').reverse().join('-');
-          if (iso > todayIso) baseDate = fm.next_review;
-        }
+        const candidate = parseDateValue(fm.next_review, this.settings);
+        if (candidate && candidate > todayDate()) baseDate = fm.next_review;
       }
-      const baseObj = parseDMY(baseDate) || todayDate();
+      const baseObj = parseDateValue(baseDate, this.settings) || todayDate();
       baseObj.setDate(baseObj.getDate() + choice);
-      const newDate = formatDMY(baseObj);
+      const newDate = formatDateValue(baseObj, this.settings);
       await this.app.fileManager.processFrontMatter(p.tfile, (fmw) => { fmw.next_review = newDate; });
       postponed++;
     }
@@ -2678,7 +2836,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async _createExtract(fromClipboard) {
-    const r = await resolveSourceOrExtractFromActive(this.app);
+    const r = await resolveSourceOrExtractFromActive(this.app, this.settings);
     if (!r) return;
     let clip = '';
     try { clip = (await navigator.clipboard.readText()).trim(); }
@@ -2693,23 +2851,24 @@ class IncrementalReadingPlugin extends Plugin {
     const extractsFolder = this.extractsFolder();
     await ensureFolder(this.app, extractsFolder);
     const priority = fm.priority ?? 50;
-    const today = todayDMY();
-    const existing = this.app.vault.getMarkdownFiles().filter(f =>
-      pathIsInside(f.path, extractsFolder) &&
-      f.basename.startsWith(safeSourceTitle + ' - Extract')
-    );
-    const n = existing.length + 1;
-    const name = `${safeSourceTitle} - Extract ${n}`;
+    const today = todayDateString(this.settings);
+    const existing = filesInFolder(this.app, extractsFolder).filter(f =>
+      f.extension === 'md' && f.basename.startsWith(safeSourceTitle + ' - Extract'));
+    let n = existing.length + 1;
+    let name = `${safeSourceTitle} - Extract ${n}`;
+    while (this.app.vault.getAbstractFileByPath(`${extractsFolder}/${name}.md`)) {
+      name = `${safeSourceTitle} - Extract ${++n}`;
+    }
     const autoInterval = priorityToInterval(priority);
 
     const customStr = await askText(this.app, `First interval in days (blank for auto: ${autoInterval}d)`, '');
     const interval = (customStr && Number.isFinite(Number(customStr)))
       ? Math.max(1, Math.round(Number(customStr))) : autoInterval;
-    const nextReview = futureDMY(interval);
+    const nextReview = futureDateString(interval, this.settings);
 
     const content = `---
 type: extract
-  source: ${JSON.stringify(`[[${sourceTitle}]]`)}
+source: ${JSON.stringify(`[[${sourceTitle}]]`)}
 status: pending
 priority: ${priority}
 next_review: ${nextReview}
@@ -2735,14 +2894,14 @@ ${body}
     if (newPri !== priority) {
       await this.app.fileManager.processFrontMatter(sourceFile, (fmw) => { fmw.priority = newPri; });
     }
-    const bump = await this._bumpAFactor(sourceFile, fm, A_FACTOR_BUMP_EXTRACT);
+    const bump = await this._bumpAFactor(sourceFile, fm, this.settings.scheduling.extract_bump);
     const bumpMsg = bump ? ` · a ${bump.from}→${bump.to}` : '';
     new Notice(`Extract: ${name} · p${priority}→${newPri} · review +${interval}d (${nextReview})${bumpMsg}`);
   }
 
   async flashcardClipboard() {
     this._dbg('flashcardClipboard start');
-    const r = await resolveSourceOrExtractFromActive(this.app);
+    const r = await resolveSourceOrExtractFromActive(this.app, this.settings);
     if (!r) return;
     const parentFile = r.tfile;
     const fm = r.fm;
@@ -2888,7 +3047,7 @@ ${body}
   // user types the name on the back. Pulls image from clipboard if present,
   // otherwise picks from the parent's embedded images or attachment folder.
   async flashcardImageName() {
-    const r = await resolveSourceOrExtractFromActive(this.app);
+    const r = await resolveSourceOrExtractFromActive(this.app, this.settings);
     if (!r) return;
 
     const imgClip = await readImageFromClipboard();
@@ -2907,7 +3066,7 @@ ${body}
           return link ? link[1] : r.tfile.basename;
         })();
     const attachDir = `${ATTACHMENTS_FOLDER}/${slugifyForFolder(parentBase)}`;
-    const folderFiles = this.app.vault.getFiles().filter(f =>
+    const folderFiles = filesInFolder(this.app, attachDir).filter(f =>
       f.path.startsWith(attachDir + '/') && /\.(png|jpe?g|webp|gif)$/i.test(f.name));
 
     const candidates = new Map();
@@ -2935,7 +3094,7 @@ ${body}
   // ---- Image extract / Occlusion (visual learning) -----------------------
 
   async imageExtractClipboard() {
-    const r = await resolveSourceOrExtractFromActive(this.app);
+    const r = await resolveSourceOrExtractFromActive(this.app, this.settings);
     if (!r) return;
 
     const sourceFolder = slugifyForFolder(r.tfile.basename);
@@ -2988,7 +3147,7 @@ ${body}
   }
 
   async occlusionCreate() {
-    const r = await resolveSourceOrExtractFromActive(this.app);
+    const r = await resolveSourceOrExtractFromActive(this.app, this.settings);
     if (!r) return;
 
     const fileContent = await this.app.vault.read(r.tfile);
@@ -3016,7 +3175,7 @@ ${body}
         new Notice('No images for this source. Use Image-extract (Mod+Shift+K) first or embed an image.');
         return;
       }
-      const files = this.app.vault.getFiles().filter(f =>
+      const files = filesInFolder(this.app, dir).filter(f =>
         f.path.startsWith(dir + '/') && /\.(png|jpe?g|webp|gif)$/i.test(f.name));
       if (files.length === 0) { new Notice('No images in attachment folder.'); return; }
       const picked = await pickFuzzy(this.app, files, f => f.name, 'Pick image');
@@ -3083,11 +3242,14 @@ ${body}
     if (!sourceType) return;
     const priStr = await askText(this.app, 'Priority (1-100, 1=highest)', '50');
     if (priStr === null) return;
-    const pNum = parseInt(priStr, 10) || 50;
+    const pNum = parseInt(priStr, 10);
+    if (!Number.isFinite(pNum) || pNum < 1 || pNum > 100) {
+      new Notice('Invalid priority — enter an integer from 1 to 100.'); return;
+    }
 
-    const today = todayDMY();
+    const today = todayDateString(this.settings);
     const interval = priorityToInterval(pNum);
-    const nextReview = futureDMY(interval);
+    const nextReview = futureDateString(interval, this.settings);
 
     let sioyek_path = null, total_pages = null, read_point = null, source_url = null;
     let video_id = null, video_url = null, video_path = null, author = null;
@@ -3113,7 +3275,7 @@ ${body}
       read_point_seconds = 0;
     } else if (sourceType === 'video') {
       const videosFolder = `${this.sourcesFolder()}/Videos`;
-      const videos = this.app.vault.getFiles()
+      const videos = filesInFolder(this.app, videosFolder)
         .filter(f => f.path.startsWith(videosFolder + '/') && /\.(mp4|webm|mov|mkv)$/i.test(f.name))
         .sort((a, b) => a.name.localeCompare(b.name));
       if (videos.length === 0) {
@@ -3196,9 +3358,9 @@ ${body}
     const p = parseInt(priStr, 10);
     if (isNaN(p) || p < 1 || p > 100) { new Notice('Invalid priority.'); return; }
 
-    const today = todayDMY();
+    const today = todayDateString(this.settings);
     const interval = priorityToInterval(p);
-    const nextReview = futureDMY(interval);
+    const nextReview = futureDateString(interval, this.settings);
     const hold = await confirmDialog(this.app, 'Hold in inbox? (Otherwise active.)');
     const initialStatus = hold ? 'inbox' : 'active';
 
@@ -3272,7 +3434,7 @@ ${body}
   }
 
   async openPdf() {
-    const r = await resolveSourceFromActive(this.app);
+    const r = await resolveSourceFromActive(this.app, this.settings);
     if (!r) return;
     const fm = r.fm;
     if (!fm.sioyek_path) { new Notice('No sioyek_path set.'); return; }
@@ -3293,7 +3455,7 @@ ${body}
   }
 
   async openSioyek() {
-    const r = await resolveSourceFromActive(this.app);
+    const r = await resolveSourceFromActive(this.app, this.settings);
     if (!r) return;
     const fm = r.fm;
     if (!fm.sioyek_path) { new Notice('No sioyek_path set.'); return; }
@@ -3349,6 +3511,10 @@ ${body}
       if (insertAt < fmEnd) insertAt = fmEnd;
       return stripped.slice(0, insertAt) + READ_POINT_MARKER + stripped.slice(insertAt);
     });
+    await this.app.fileManager.processFrontMatter(active, (next) => {
+      if (action === 'clear') delete next.read_point_line;
+      else next.read_point_line = cursor.line + 1;
+    });
     new Notice(action === 'clear' ? '📍 cleared.' : `📍 ${action} at line ${cursor.line + 1}`);
   }
 
@@ -3401,14 +3567,14 @@ ${body}
       if (fm.status === 'inbox') { nInbox++; continue; }
       if (fm.type === 'source') nSrc++;
       else if (fm.type === 'extract') nExt++;
-      const nr = parseDMY(fm.next_review);
+      const nr = parseDateValue(fm.next_review, this.settings);
       if (nr) {
         const diff = daysBetween(today, nr);
         if (diff > 0) overdue++;
         else if (diff === 0) dueToday++;
         else future++;
       } else dueToday++;
-      const lr = parseDMY(fm.last_reviewed);
+      const lr = parseDateValue(fm.last_reviewed, this.settings);
       if (lr) {
         if (lr.getTime() === today.getTime()) {
           todayRev++;
@@ -3423,7 +3589,10 @@ ${body}
     const logFile = this.app.vault.getAbstractFileByPath(this.reviewLogPath());
     if (logFile) {
       const log = await this.app.vault.read(logFile);
-      const rows = log.split('\n').filter(l => /^\|\s*\d{2}-\d{2}-\d{4}/.test(l));
+      const rows = log.split('\n').filter(line => {
+        const firstCell = line.match(/^\|\s*([^|]+?)\s*\|/)?.[1];
+        return !!parseDateValue(firstCell, this.settings);
+      });
       lifetime = rows.length;
     }
 
@@ -3465,7 +3634,7 @@ ${body}
     const selected = headings.filter(h => titles.has(h.title));
     if (selected.length === 0) return;
 
-    const today = todayDMY();
+    const today = todayDateString(this.settings);
     const parentTitle = active.basename;
     const priority = fm.priority ?? 50;
     const baseInterval = priorityToInterval(priority);
@@ -3477,13 +3646,13 @@ ${body}
       const next = headings[headings.indexOf(h) + 1];
       const sectionBody = body.slice(h.index, next ? next.index : body.length).trimEnd();
       const interval = baseInterval + i;
-      const nextReview = futureDMY(interval);
+      const nextReview = futureDateString(interval, this.settings);
       const noteTitle = slugifyForFolder(`${parentTitle} - ${h.title}`) || `${parentTitle} - Section ${i + 1}`;
       const noteContent = `---
 type: source
 source_type: article
 status: active
-  parent: ${JSON.stringify(`[[${parentTitle}]]`)}
+parent: ${JSON.stringify(`[[${parentTitle}]]`)}
 priority: ${priority}
 next_review: ${nextReview}
 interval: ${interval}
@@ -3548,7 +3717,7 @@ ${sectionBody}
     const sourceType = fm.source_type ?? 'book';
     const sioyekPath = fm.sioyek_path ?? null;
     const totalPages = fm.total_pages ?? null;
-    const dateAdded = fm.date_added ?? todayDMY();
+    const dateAdded = fm.date_added ?? todayDateString(this.settings);
     const folder = this.sourcesFolder();
     await ensureFolder(this.app, folder);
     let created = 0;
@@ -3563,7 +3732,7 @@ ${sectionBody}
       if (this.app.vault.getAbstractFileByPath(path)) { skipped.push(name); continue; }
 
       const chInterval = baseInterval + i;
-      const chNext = futureDMY(chInterval);
+      const chNext = futureDateString(chInterval, this.settings);
       const chPages = (ch.end != null && ch.start != null) ? Math.max(1, ch.end - ch.start + 1) : null;
       const chAFactor = round4(initialAFactor(this.settings, { total_pages: chPages }));
 
@@ -3572,7 +3741,7 @@ type: source
 source_type: ${sourceType}
 status: active
 priority: ${priority}
-  parent: ${JSON.stringify(`[[${parentTitle}]]`)}
+parent: ${JSON.stringify(`[[${parentTitle}]]`)}
 chapter_num: ${i + 1}
 next_review: ${chNext}
 interval: ${chInterval}
@@ -3583,7 +3752,7 @@ read_point: ${ch.start}
 page_start: ${ch.start}
 page_end: ${ch.end}
 total_pages: ${totalPages}
-  sioyek_path: ${sioyekPath ? JSON.stringify(sioyekPath) : ''}
+sioyek_path: ${sioyekPath ? JSON.stringify(sioyekPath) : ''}
 date_added: ${dateAdded}
 tags:
   - incremental-reading
