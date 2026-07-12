@@ -21,9 +21,9 @@ Select **Open user guide** at the top of the settings page, or run **Incremental
 4. Select an important passage and run **Extract selection**. For a PDF, copy the passage and run **Extract from clipboard (PDF-aware)**.
 5. Leave the cursor where you stopped. Run **Grade and advance**, choose whether to update the read point, then choose the topic pace.
 6. When a passage should become durable memory, copy it and run **Flashcard from clipboard**.
-7. Run **Review cards (Spaced Repetition)** to study cards in Spaced Repetition's review interface.
+7. Continue with **Next element** for a mixed topic/card session, or run **Review cards (Spaced Repetition)** for card-only study.
 
-The reading queue schedules sources and extracts. Spaced Repetition schedules cards. They remain connected through source links, but they use separate review commands.
+The learning queue alternates sources/extracts with card notes. Topic scheduling uses the Toolkit A-Factor model; opening a card hands its grading and interval back to Spaced Repetition.
 
 ## Set up keybindings
 
@@ -63,15 +63,12 @@ Moving the marker counts as progress. When the stall guard is enabled, an unchan
 
 ## Read PDFs and books
 
-Create a source with **New source**, select **PDF** or **Book**, and enter the absolute PDF or EPUB path. Use:
+Create a source with **New source**, select **PDF** or **Book**, and enter a vault-relative or absolute PDF path. Use:
 
-- **Open PDF (Obsidian viewer)** for PDFs stored inside the vault.
-- **Open in Sioyek** for external PDFs, EPUB files, and page-aware external reading.
+- **Open PDF (Toolkit viewer)** for PDFs stored inside or outside the vault. Enter a page in the toolbar and use **Save read point** to update the source.
 - **Split book into chapters** to schedule chapters independently from a pasted page-range list.
 
 When grading, enter the page where you stopped. Chapter scheduling uses the chapter end page rather than the total length of the book.
-
-The Sioyek command launches the executable configured in settings only when you explicitly run **Open in Sioyek**.
 
 ## Create extracts and cards
 
@@ -121,9 +118,9 @@ Confirm Spaced Repetition is enabled and that its flashcard tags include `#flash
 
 Reload Obsidian, then run **Review cards (Spaced Repetition)** again.
 
-**A PDF does not open in Obsidian**
+**A PDF does not open in the Toolkit viewer**
 
-The built-in viewer only opens PDFs inside the vault. Use **Open in Sioyek** for an external path or EPUB file.
+Confirm `pdf_path` is a valid vault-relative or absolute path, or set `pdf_vault_path` to the vault file. EPUB is not supported.
 
 **A knowledge-tree parent is ambiguous**
 

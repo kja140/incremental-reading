@@ -33,15 +33,15 @@ SuperMemo describes incremental reading as importing electronic articles, readin
 | Article decomposition | Extracts, split-on-heading, and split-book commands | Strong |
 | Source references | Obsidian links and source/parent frontmatter retained through extraction and card creation | Similar |
 | Incremental video and images | Timestamped video sources, image extracts, image cards, and image occlusion | Partial |
-| One unified learning process | Separate reading-topic queue and Spaced Repetition card queue | Intentional difference |
+| One unified learning process | Mixed topic/card stream with Spaced Repetition owning card grades | Strong, shared between plugins |
 
 ## Intentional differences
 
 ### Card scheduling and review
 
-SuperMemo presents topics and memory items through one learning system. Incremental Reading Toolkit schedules only reading topics. It writes cards in native [Spaced Repetition](https://github.com/st3v3nmw/obsidian-spaced-repetition) Markdown and opens that plugin's review interface for card study. This keeps cards compatible with a maintained Obsidian ecosystem instead of duplicating a second flashcard scheduler.
+SuperMemo presents topics and memory items through one learning system. Incremental Reading Toolkit now mirrors that presentation with a mixed daily stream: independently ranked reading topics and card notes alternate whenever both are available. It writes cards in native [Spaced Repetition](https://github.com/st3v3nmw/obsidian-spaced-repetition) Markdown and opens that plugin's per-note review interface for the actual card grade. This keeps cards compatible with a maintained Obsidian ecosystem instead of duplicating a second flashcard scheduler.
 
-As a result, `Next element` advances through reading sources and extracts, while `Review cards` opens Spaced Repetition's UI. The queues are related by source links but are not automatically interleaved into one session.
+As a result, `Next element` advances through an interleaved topic/card session. Topic rows open at their read point; card rows open the note and hand off to Spaced Repetition. `Review cards` remains available for a card-only session.
 
 ### Scheduling algorithms
 

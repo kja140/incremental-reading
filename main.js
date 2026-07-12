@@ -1311,9 +1311,7 @@ class IRQueueView extends ItemView {
       this._render();
       return;
     }
-    const leaf = this.plugin.app.workspace.getLeaf(false);
-    await leaf.openFile(r.file);
-    this.plugin.app.commands.executeCommandById(`${this.plugin.manifest.id}:jump-to-read-point`);
+    await this.plugin.openLearningItem({ ...r, tfile: r.file });
   }
 
   _renderTimeline(root) {
@@ -1399,14 +1397,14 @@ class UserGuideModal extends Modal {
     ]) daily.createEl('li', { text });
 
     root.createEl('h3', { text: 'PDFs, cards, and dates' });
-    root.createEl('p', { text: 'Use Open PDF for vault PDFs and Open in Sioyek for external PDFs or EPUB files. Card algorithms and statistics live in Spaced Repetition.' });
+    root.createEl('p', { text: 'Use the Toolkit PDF viewer for vault or external PDFs. Card algorithms and grades remain in Spaced Repetition, while the mixed session alternates their card notes with reading topics.' });
     root.createEl('p', { text: 'Choose DD-MM-YYYY, MM-DD-YYYY, or YYYY-MM-DD in General settings. Relative schedules such as +3d work with every format.' });
 
     root.createEl('h3', { text: 'Troubleshooting' });
     const trouble = root.createEl('ul');
     for (const text of [
       'No cards in review: enable Spaced Repetition and keep #flashcards in its flashcard tags.',
-      'External PDF will not open: confirm the Sioyek executable and source path in settings.',
+      'PDF will not open: confirm pdf_path points to an existing PDF, or use pdf_vault_path for a vault file.',
       'Ambiguous tree parent: rename files that share the same basename.',
       'For the full guide, open docs/USER-GUIDE.md in the GitHub repository from the Help link.',
     ]) trouble.createEl('li', { text });
@@ -4075,7 +4073,7 @@ ${sectionBody}
     const priority = fm.priority ?? 50;
     const baseInterval = priorityToInterval(priority);
     const sourceType = fm.source_type ?? 'book';
-    const sioyekPath = fm.sioyek_path ?? null;
+    const pdfPath = fm.pdf_path ?? fm.pdf_vault_path ?? fm.sioyek_path ?? null;
     const totalPages = fm.total_pages ?? null;
     const dateAdded = fm.date_added ?? todayDateString(this.settings);
     const folder = this.sourcesFolder();
@@ -4112,7 +4110,7 @@ read_point: ${ch.start}
 page_start: ${ch.start}
 page_end: ${ch.end}
 total_pages: ${totalPages}
-sioyek_path: ${sioyekPath ? JSON.stringify(sioyekPath) : ''}
+pdf_path: ${pdfPath ? JSON.stringify(pdfPath) : ''}
 date_added: ${dateAdded}
 tags:
   - incremental-reading
