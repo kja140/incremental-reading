@@ -1,5 +1,21 @@
 # Incremental Reading Toolkit changelog
 
+## Unreleased
+
+### Added
+- Added a native main dashboard with due, overdue, reviewed, card, active-topic, session-order, and
+  collection-health summaries.
+- Added an integrated PDF reader for vault and external PDFs with page navigation and persisted read
+  points, replacing the runtime dependency on Sioyek.
+- Added knowledge-tree collection totals, type filtering, status badges, due-date tooltips, and an
+  option to hide or show completed material.
+
+### Changed
+- Daily learning sessions now alternate reading topics and card notes whenever both are available.
+  Spaced Repetition remains responsible for card grading and intervals.
+- New PDF/book sources store `pdf_path`; existing `sioyek_path` fields remain readable for backward
+  compatibility and require no migration.
+
 ## 1.0.4 — 2026-07-12
 
 ### Added
