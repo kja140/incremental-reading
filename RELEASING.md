@@ -1,4 +1,4 @@
-# Releasing Incremental Reading
+# Releasing Incremental Reading Toolkit
 
 ## Before tagging
 
@@ -13,8 +13,8 @@
 Create and push an annotated tag that exactly matches the version in `manifest.json`:
 
 ```bash
-git tag -a 1.0.1 -m "1.0.1"
-git push origin 1.0.1
+git tag -a 1.0.2 -m "1.0.2"
+git push origin 1.0.2
 ```
 
 The release workflow verifies the repository and creates a draft GitHub release containing `main.js`, `manifest.json`, and `styles.css`. Review its generated notes, then publish it.

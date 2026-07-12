@@ -28,5 +28,5 @@ jobs:
           gh release create "${GITHUB_REF_NAME}"
           --draft
           --generate-notes
-          --title "Incremental Reading ${GITHUB_REF_NAME}"
+          --title "Incremental Reading Toolkit ${GITHUB_REF_NAME}"
           main.js manifest.json styles.css

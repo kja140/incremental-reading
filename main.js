@@ -1706,7 +1706,7 @@ class IncrementalReadingPlugin extends Plugin {
     cmd('seed-inline-cards', 'Export inline cards to Spaced Repetition', () => this.seedInlineCards());
     this.app.workspace.onLayoutReady(() => {
       const count = this._legacyCardFiles().length;
-      if (count) new Notice(`Incremental Reading: ${count} legacy card${count === 1 ? '' : 's'} found. Run "Migrate legacy cards to Spaced Repetition".`, 10000);
+      if (count) new Notice(`Incremental Reading Toolkit: ${count} legacy card${count === 1 ? '' : 's'} found. Run "Migrate legacy cards to Spaced Repetition".`, 10000);
     });
   }
 
@@ -1864,7 +1864,7 @@ class IncrementalReadingPlugin extends Plugin {
   // Debug logging — silent unless the user enables it in settings. Keeps the
   // default console clean (Obsidian guideline: only errors by default).
   _dbg(...args) {
-    if (this.settings?.misc?.debug) console.log('[Incremental Reading]', ...args);
+    if (this.settings?.misc?.debug) console.log('[Incremental Reading Toolkit]', ...args);
   }
 
   // ---- Next / Random -----------------------------------------------------
@@ -2144,7 +2144,7 @@ class IncrementalReadingPlugin extends Plugin {
 
   async _activateQueueView() {
     if (!this.settings.queue.sidebar_enabled) {
-      new Notice('Sidebar disabled in Incremental Reading settings');
+      new Notice('Sidebar disabled in Incremental Reading Toolkit settings');
       return;
     }
     const leaves = this.app.workspace.getLeavesOfType(IR_QUEUE_VIEW_TYPE);
@@ -3428,7 +3428,7 @@ ${body}
     }
 
     const lines = [
-      '**Incremental Reading stats**', '',
+      '**Incremental Reading Toolkit stats**', '',
       `📊 Reading topics: ${nSrc + nExt} active (${nSrc}s / ${nExt}x) · ${nCard} card files`,
       `📅 Queue: 🔴 ${overdue} overdue · 🟡 ${dueToday} due today · 🟢 ${future} scheduled`,
       `📦 Inbox: ${nInbox} · ✅ Done: ${nDone} · 🚫 Dismissed: ${nDismissed}`, '',

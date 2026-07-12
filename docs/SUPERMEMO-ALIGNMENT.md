@@ -1,6 +1,6 @@
 # SuperMemo workflow alignment
 
-Incremental Reading is inspired by [SuperMemo's incremental reading](https://help.supermemo.org/wiki/Incremental_reading) workflow and by bjsi's [Incremental Writing plugin for Obsidian](https://github.com/bjsi/incremental-writing). It is an independent implementation for Obsidian, not a port of SuperMemo and not affiliated with or endorsed by either project.
+Incremental Reading Toolkit is inspired by [SuperMemo's incremental reading](https://help.supermemo.org/wiki/Incremental_reading) workflow and by bjsi's [Incremental Writing plugin for Obsidian](https://github.com/bjsi/incremental-writing). It is an independent implementation for Obsidian, not a port of SuperMemo and not affiliated with or endorsed by either project.
 
 ## Summary
 
@@ -13,11 +13,11 @@ The plugin is aligned with SuperMemo at the workflow level:
 5. Turn selected knowledge into cloze or question-and-answer cards.
 6. Review topics and cards over time while managing inevitable overload.
 
-SuperMemo describes incremental reading as importing electronic articles, reading them in small portions, extracting important fragments, converting those fragments into questions and answers, and reviewing them with spaced repetition. Incremental Reading supports the same progression using Markdown notes and Obsidian links.
+SuperMemo describes incremental reading as importing electronic articles, reading them in small portions, extracting important fragments, converting those fragments into questions and answers, and reviewing them with spaced repetition. Incremental Reading Toolkit supports the same progression using Markdown notes and Obsidian links.
 
 ## Feature comparison
 
-| SuperMemo concept | Incremental Reading equivalent | Alignment |
+| SuperMemo concept | Incremental Reading Toolkit equivalent | Alignment |
 | --- | --- | --- |
 | Imported articles and topics | Source notes, clipping import, PDF/EPUB paths, images, and YouTube source notes | Strong |
 | Reading many sources in small portions | Priority-aware topic queue, `Next element`, postponement, and manual scheduling | Strong |
@@ -39,7 +39,7 @@ SuperMemo describes incremental reading as importing electronic articles, readin
 
 ### Card scheduling and review
 
-SuperMemo presents topics and memory items through one learning system. Incremental Reading schedules only reading topics. It writes cards in native [Spaced Repetition](https://github.com/st3v3nmw/obsidian-spaced-repetition) Markdown and opens that plugin's review interface for card study. This keeps cards compatible with a maintained Obsidian ecosystem instead of duplicating a second flashcard scheduler.
+SuperMemo presents topics and memory items through one learning system. Incremental Reading Toolkit schedules only reading topics. It writes cards in native [Spaced Repetition](https://github.com/st3v3nmw/obsidian-spaced-repetition) Markdown and opens that plugin's review interface for card study. This keeps cards compatible with a maintained Obsidian ecosystem instead of duplicating a second flashcard scheduler.
 
 As a result, `Next element` advances through reading sources and extracts, while `Review cards` opens Spaced Repetition's UI. The queues are related by source links but are not automatically interleaved into one session.
 
@@ -49,11 +49,11 @@ The topic scheduler is inspired by SuperMemo's A-Factor-based topic repetition, 
 
 ### Overload tools
 
-SuperMemo documents auto-sort, auto-postpone, and priority-queue mechanisms for large overloaded collections. Incremental Reading provides explicit priority controls, filtered subset review, bulk postponement, and the `Mercy` command for distributing overdue topics. These serve the same practical goal but are not exact equivalents of SuperMemo's automatic behavior.
+SuperMemo documents auto-sort, auto-postpone, and priority-queue mechanisms for large overloaded collections. Incremental Reading Toolkit provides explicit priority controls, filtered subset review, bulk postponement, and the `Mercy` command for distributing overdue topics. These serve the same practical goal but are not exact equivalents of SuperMemo's automatic behavior.
 
 ### Incremental writing
 
-The [Incremental Writing plugin](https://github.com/bjsi/incremental-writing) inspired the use of prioritized queues, note/block review, manual scheduling, and A-Factor-style intervals in Obsidian. Incremental Reading applies those ideas primarily to reading, extraction, and knowledge capture. It does not replace Incremental Writing's dedicated workflow for repeatedly revising drafts and blocks.
+The [Incremental Writing plugin](https://github.com/bjsi/incremental-writing) inspired the use of prioritized queues, note/block review, manual scheduling, and A-Factor-style intervals in Obsidian. Incremental Reading Toolkit applies those ideas primarily to reading, extraction, and knowledge capture. It does not replace Incremental Writing's dedicated workflow for repeatedly revising drafts and blocks.
 
 ## Design target
 

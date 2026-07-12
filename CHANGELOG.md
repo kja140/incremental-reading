@@ -1,4 +1,10 @@
-# Incremental Reading changelog
+# Incremental Reading Toolkit changelog
+
+## 1.0.2 — 2026-07-12
+
+### Fixed
+- Renamed the Community Plugins display name to **Incremental Reading Toolkit** because
+  **Incremental Reading** is already published by another developer.
 
 ## 1.0.1 — 2026-07-12
 
