@@ -1,5 +1,21 @@
 # Incremental Reading Toolkit changelog
 
+## 1.1.3 — 2026-07-13
+
+### Fixed
+- Knowledge-tree branches can now be collapsed while completed items are hidden.
+- Mixed sessions now read Spaced Repetition scheduling comments and include only cards that are new or
+  actually due, while preserving card/topic interleaving.
+- Inbox topics appear in the queue's New section, and asynchronous refreshes cannot overwrite newer
+  queue results.
+- **Import clipping** creates a unique destination on filename collisions instead of leaving a converted
+  source outside the managed folder.
+- **Split book** rejects empty, reversed, overlapping, unordered, and out-of-bounds chapter ranges.
+- Cancelling extract creation stops the operation, and page, priority, interval, duration, and timestamp
+  prompts now reject malformed or partially numeric values.
+- Invalid inline-card regular expressions produce an actionable setup/export error instead of crashing.
+- Daily and weekly review statistics include topics completed or dismissed during the measured period.
+
 ## 1.1.2 — 2026-07-13
 
 ### Fixed
