@@ -2439,7 +2439,6 @@ class IncrementalReadingPlugin extends Plugin {
     if (!item?.tfile) return;
     await this.app.workspace.getLeaf(false).openFile(item.tfile);
     if (item.fm.type === 'card') {
-      await this.consumeSessionItem(item.tfile.path);
       this.reviewCardsInNote();
     } else {
       this.app.commands.executeCommandById(`${this.manifest.id}:jump-to-read-point`);
@@ -2476,8 +2475,13 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async gradeAndAdvance() {
-    if (getFm(this.app, this.app.workspace.getActiveFile())?.type === 'card') {
-      this.reviewCardsInNote();
+    const active = this.app.workspace.getActiveFile();
+    if (getFm(this.app, active)?.type === 'card') {
+      // Spaced Repetition has already graded the card. Mark this card row as
+      // consumed only now (not when it opens, since the review may be cancelled)
+      // and continue the mixed stream instead of reopening the same review UI.
+      if (active) await this.consumeSessionItem(active.path);
+      await this.nextElement();
       return;
     }
     await this.endSession();

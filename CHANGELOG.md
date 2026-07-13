@@ -1,5 +1,12 @@
 # Incremental Reading Toolkit changelog
 
+## 1.1.1 — 2026-07-13
+
+### Fixed
+- After a Spaced Repetition card is answered, **Grade and advance** now consumes that card's daily
+  session row and continues to the next card or reading topic instead of reopening the same review.
+- Opening a card no longer removes it from the mixed session before it has been answered.
+
 ## 1.1.0 — 2026-07-13
 
 ### Added
