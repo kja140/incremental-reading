@@ -17,7 +17,7 @@ The Toolkit provides a mixed learning stream, but it does not replace Spaced Rep
 
 ## Main surfaces
 
-- **Next element** chooses a due reading topic.
+- **Build today's session queue** chooses due topics and cards; **Next element** only opens the following saved path.
 - **Reading queue** shows upcoming and due topics.
 - **Dashboard** summarizes sessions, workload, and collection health.
 - **Knowledge tree** shows parent/child relationships between categories, sources, and extracts.

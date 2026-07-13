@@ -7,6 +7,8 @@
 3. Run `npm ci` and `npm run check`.
 4. Test the release files in a dedicated Obsidian development vault using the folder `.obsidian/plugins/incremental-reading-toolkit/`.
 5. Confirm Spaced Repetition card creation, review delegation, legacy migration, and topic scheduling manually.
+6. Merge the release changes into the default branch and pull that exact commit locally. Do not tag an
+   unmerged feature branch.
 
 ## Create the release
 
@@ -17,7 +19,10 @@ git tag -a 1.0.4 -m "1.0.4"
 git push origin 1.0.4
 ```
 
-The release workflow verifies the repository and creates a draft GitHub release containing `main.js`, `manifest.json`, and `styles.css`. Review its generated notes, then publish it.
+Push the tag only after the release commit is on the default branch. Do not manually create a GitHub
+release first: the release workflow verifies the repository and creates the draft release containing
+`main.js`, `manifest.json`, and `styles.css`. Review its generated notes, confirm all three assets are
+attached, then publish it.
 
 ## Submit the first release
 

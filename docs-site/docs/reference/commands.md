@@ -23,10 +23,10 @@ title: Command reference
 
 | Command | Purpose |
 |---|---|
-| Next element | Choose the next priority-aware learning element. |
+| Build today's session queue | Calculate and save the priority-aware mixed queue. |
+| Next element | Open the following saved queue path without recalculating the queue. |
 | Random due element | Choose randomly from due topics. |
-| Grade and advance | Grade the current topic, reschedule it, and continue. |
-| End session (grade current) | Grade the current topic and stop. |
+| Grade current element | Grade and reschedule the current topic without navigating, or finish a card after Spaced Repetition accepts its answer. |
 | Review cards | Open Spaced Repetition review. |
 | Review cards in current note | Review cards associated with the active note. |
 | Done | Mark complete. |

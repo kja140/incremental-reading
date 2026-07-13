@@ -16,14 +16,14 @@ Select **Open user guide** at the top of the settings page, or run **Incremental
 ## Five-minute quickstart
 
 1. Open an article note and run **Import clipping (active note)**, or run **New source** to create a book, PDF, article, or video source.
-2. Run **Next element** to open the highest-urgency reading topic.
+2. Run **Build today's session queue**, then use **Next element** to open the next saved item.
 3. Read a useful portion rather than trying to finish the source.
 4. Select an important passage and run **Extract selection**. For a PDF, copy the passage and run **Extract from clipboard (PDF-aware)**.
-5. Leave the cursor where you stopped. Run **Grade and advance**, choose whether to update the read point, then choose the topic pace.
+5. Leave the cursor where you stopped. Run **Grade current element**, choose whether to update the read point, then choose the topic pace. Run **Next element** separately when ready.
 6. When a passage should become durable memory, copy it and run **Flashcard from clipboard**.
-7. Continue with **Next element** for a mixed topic/card session, or run **Review cards (Spaced Repetition)** for card-only study.
+7. Continue with **Next element** for a mixed topic/card session. When it opens a card note, run **Review cards in current note**, answer the card, then run **Grade current element**. Use **Review cards (Spaced Repetition)** for card-only study.
 
-The learning queue alternates sources/extracts with card notes. Topic scheduling uses the Toolkit A-Factor model; opening a card hands its grading and interval back to Spaced Repetition.
+The learning queue alternates sources/extracts with card notes. **Next element** only opens the next saved path. Topic scheduling uses the Toolkit A-Factor model; **Review cards in current note** hands a card's grading and interval to Spaced Repetition.
 
 ## Set up keybindings
 
@@ -39,14 +39,14 @@ The plugin does not assign default hotkeys. This avoids overwriting shortcuts al
 | Workflow | Command | Suggested hotkey |
 | --- | --- | --- |
 | Start or continue reading | Next element | `Cmd/Ctrl+Shift+J` |
-| Finish the current portion | Grade and advance | `Cmd/Ctrl+Shift+Enter` |
+| Finish the current portion | Grade current element | `Cmd/Ctrl+Shift+Enter` |
 | Save selected text | Extract selection | `Cmd/Ctrl+Shift+E` |
 | Capture from a PDF or clipboard | Extract from clipboard (PDF-aware) | `Cmd/Ctrl+Alt+E` |
 | Create a card | Flashcard from clipboard | `Cmd/Ctrl+Shift+F` |
 | Mark your place | Toggle read-point | `Cmd/Ctrl+Shift+P` |
 | Study cards | Review cards (Spaced Repetition) | `Cmd/Ctrl+Shift+R` |
 
-Start with **Next element**, **Grade and advance**, and **Extract selection**. Add the others only when the workflow feels familiar.
+Start with **Build today's session queue**, **Next element**, **Grade current element**, and **Extract selection**. Add the others only when the workflow feels familiar.
 
 ## Read notes and articles
 
@@ -57,7 +57,7 @@ During each visit:
 1. Run **Jump to read-point** to return to the marker.
 2. Read until attention drops or you reach a useful stopping point.
 3. Create extracts from passages worth revisiting.
-4. Run **Grade and advance** and update the marker to the cursor position.
+4. Run **Grade current element** and update the marker to the cursor position.
 
 Moving the marker counts as progress. When the stall guard is enabled, an unchanged marker prevents the interval from growing.
 

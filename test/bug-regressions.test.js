@@ -22,6 +22,17 @@ test('Spaced Repetition scheduling comments control whether a card is due', () =
   assert.equal(isDue('<!--SR:!2026-07-14,2,250-->', today), false);
 });
 
+test('Spaced Repetition completion detects scheduling changes rather than arbitrary edits', () => {
+  const factory = new Function(`${functionSource('spacedRepetitionScheduleSignature')}; return spacedRepetitionScheduleSignature;`);
+  const signature = factory();
+  assert.equal(signature('question\nanswer'), '');
+  assert.equal(signature('<!--SR:!2026-07-14,2,250-->'), '<!--SR:!2026-07-14,2,250-->');
+  assert.equal(
+    signature('<!--SR:!2026-07-14,2,250-->\ntext\n<!--SR:2026-07-15,3,260-->'),
+    '<!--SR:!2026-07-14,2,250-->\n<!--SR:2026-07-15,3,260-->',
+  );
+});
+
 test('tree completion filtering does not force branches open', () => {
   assert.match(main, /this\._match = \{ keep, forceExpand: !!f \|\| this\.typeFilter !== 'all' \}/);
   assert.match(main, /const expanded = !!this\._match\?\.forceExpand \|\| this\.plugin\.isExpanded\(key\)/);
@@ -70,8 +81,9 @@ test('stats command opens the visual analytics dashboard', () => {
 
 test('note navigation refreshes only the queue timeline', () => {
   const queueOpen = main.slice(main.indexOf('class IRQueueView'), main.indexOf('//  Settings Tab'));
-  assert.match(queueOpen, /workspace\.on\('file-open', file => this\._refreshTimeline\(false, file\)\)/);
-  assert.match(queueOpen, /workspace\.on\('active-leaf-change', \(\) => this\._refreshTimeline\(\)\)/);
+  assert.match(queueOpen, /workspace\.on\('file-open',[\s\S]*?this\._refreshTimeline\(false, file\)/);
+  assert.match(queueOpen, /workspace\.on\('active-leaf-change',[\s\S]*?this\._refreshTimeline\(\)/);
+  assert.match(queueOpen, /if \(!this\.plugin\.directQueueNavigation\)/);
   assert.doesNotMatch(queueOpen, /active-leaf-change', \(\) => this\._render\(\)/);
 });
 
@@ -86,6 +98,17 @@ test('queue rows and card due checks are cached with precise invalidation', () =
 test('hidden collection views defer metadata renders', () => {
   assert.match(main, /function isViewVisible\(view\)/);
   assert.match(main, /if \(!isViewVisible\(this\)\) \{ this\.needsRender = true; return; \}/);
+});
+
+test('vault structure and card-body listeners are scoped and defer expensive card renders', () => {
+  const queue = main.slice(main.indexOf('class IRQueueView'), main.indexOf('//  Settings Tab'));
+  const dashboard = main.slice(main.indexOf('class MainDashboardView'), main.indexOf('class KnowledgeTreeView'));
+  assert.match(queue, /isPathInIRCollection\(this\.plugin\.settings, file\?\.path\)/);
+  assert.match(queue, /this\.needsRowsRender = true/);
+  assert.doesNotMatch(queue, /_scheduleRowsRender\('card-modify'\)/);
+  assert.match(dashboard, /this\.needsRender = true/);
+  assert.match(main, /vault\.on\('create', file => \{[\s\S]*?isPathInIRCollection/);
+  assert.match(main, /isPathInIRCollection\(this\.settings, oldPath\)[\s\S]*?isPathInIRCollection\(this\.settings, file\?\.path\)/);
 });
 
 test('collection-heavy features share one cached file and metadata index', () => {
