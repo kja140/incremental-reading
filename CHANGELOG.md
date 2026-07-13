@@ -1,6 +1,6 @@
 # Incremental Reading Toolkit changelog
 
-## Unreleased
+## 1.1.0 — 2026-07-13
 
 ### Added
 - Added a native main dashboard with due, overdue, reviewed, card, active-topic, session-order, and
@@ -15,6 +15,8 @@
   Spaced Repetition remains responsible for card grading and intervals.
 - New PDF/book sources store `pdf_path`; existing `sioyek_path` fields remain readable for backward
   compatibility and require no migration.
+- Removed the Sioyek shell launcher and all `child_process` usage. Release validation now rejects
+  shell-execution imports so the plugin cannot regress to that permission.
 
 ## 1.0.4 — 2026-07-12
 

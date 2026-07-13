@@ -43,6 +43,9 @@ const main = readFileSync('main.js', 'utf8');
 for (const unsupported of ['window.app', 'this.app.plugins', '.innerHTML', '.outerHTML', 'insertAdjacentHTML']) {
   if (main.includes(unsupported)) fail(`main.js contains unsupported API usage: ${unsupported}`);
 }
+for (const shellApi of ["require('child_process')", 'require("child_process")', 'node:child_process']) {
+  if (main.includes(shellApi)) fail(`main.js must not use shell execution: ${shellApi}`);
+}
 for (const broadEnumeration of ['getMarkdownFiles()', 'getFiles()']) {
   if (main.includes(broadEnumeration)) fail(`main.js enumerates the entire vault: ${broadEnumeration}`);
 }
