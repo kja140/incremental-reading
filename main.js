@@ -1210,6 +1210,7 @@ class IRQueueView extends ItemView {
     this.refreshTimer = null;
     this.contentLeaf = null;
     this.modifyTimer = null;
+    this.rowsGeneration = 0;
   }
 
   getViewType() { return IR_QUEUE_VIEW_TYPE; }
@@ -1254,6 +1255,7 @@ class IRQueueView extends ItemView {
   }
 
   async _renderRows(root) {
+    const generation = ++this.rowsGeneration;
     let sectionsEl = root.querySelector('.ir-queue-sections');
     if (!sectionsEl) sectionsEl = root.createDiv({ cls: 'ir-queue-sections' });
     sectionsEl.empty();
@@ -1268,6 +1270,7 @@ class IRQueueView extends ItemView {
       const pool = await this.plugin.buildDuePool({ skipCurrent: false });
       session = this.plugin.buildInterleavedQueue(pool, today);
     }
+    if (generation !== this.rowsGeneration || !sectionsEl.isConnected) return;
 
     // 2. Build supplementary groups from a single full-file scan for items NOT in session.
     // Only exclude files that are themselves session entries (topics/file-cards) from
@@ -2602,14 +2605,15 @@ class IncrementalReadingPlugin extends Plugin {
     if (fm.type === 'source' && fm.read_point != null && !isVideo) {
       const rp = await askText(this.app, 'Page you stopped at', String(fm.read_point));
       if (rp === null) return;
-      const parsed = parseInt(rp, 10);
-      if (Number.isFinite(parsed)) newReadPoint = parsed;
+      if (!/^[1-9]\d*$/.test(rp.trim())) { new Notice('Enter a positive whole page number.'); return; }
+      newReadPoint = Number(rp);
     } else if (isVideo) {
       const cur = formatSeconds(Number(fm.read_point_seconds) || 0);
       const raw = await askText(this.app, 'Timestamp you stopped at (mm:ss or hh:mm:ss)', cur);
       if (raw === null) return;
       const parsed = parseTimeInput(raw);
-      if (parsed != null) newReadPointSeconds = parsed;
+      if (parsed == null) { new Notice('Invalid timestamp — use mm:ss or hh:mm:ss.'); return; }
+      newReadPointSeconds = parsed;
     }
 
     const isMarkdownSource = fm.type === 'source' && !fm.total_pages && !fm.pdf_path && !fm.pdf_vault_path && !fm.sioyek_path;
@@ -3130,8 +3134,9 @@ class IncrementalReadingPlugin extends Plugin {
     const cur = r.fm.priority ?? 50;
     const raw = await askText(this.app, 'New priority (1-100, 1=highest)', String(cur));
     if (raw === null) return;
-    const p = parseInt(raw, 10);
-    if (isNaN(p) || p < 1 || p > 100) { new Notice('Invalid priority — integer 1-100.'); return; }
+    if (!/^\d+$/.test(raw.trim())) { new Notice('Invalid priority — integer 1-100.'); return; }
+    const p = Number(raw);
+    if (!Number.isInteger(p) || p < 1 || p > 100) { new Notice('Invalid priority — integer 1-100.'); return; }
     await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => { fmw.priority = p; });
     new Notice(`Priority → ${p} (next_review unchanged — A-Factor-driven)`);
   }
@@ -3150,8 +3155,9 @@ class IncrementalReadingPlugin extends Plugin {
     if (amount === 'custom') {
       const raw = await askText(this.app, 'Boost amount (1-99)', '10');
       if (!raw) return;
-      const n = parseInt(raw, 10);
-      if (!Number.isFinite(n) || n < 1 || n > 99) { new Notice('Invalid amount.'); return; }
+      if (!/^\d+$/.test(raw.trim())) { new Notice('Invalid amount.'); return; }
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1 || n > 99) { new Notice('Invalid amount.'); return; }
       delta = n;
     } else { delta = amount; }
 
@@ -3328,8 +3334,10 @@ class IncrementalReadingPlugin extends Plugin {
 
     const customStr = await askText(this.app, `First interval in days (blank for auto: ${autoInterval}d)`, '');
     if (customStr === null) return;
-    const interval = (customStr && Number.isFinite(Number(customStr)))
-      ? Math.max(1, Math.round(Number(customStr))) : autoInterval;
+    if (customStr.trim() && !/^[1-9]\d*$/.test(customStr.trim())) {
+      new Notice('Invalid interval — enter a positive whole number of days.'); return;
+    }
+    const interval = customStr.trim() ? Number(customStr) : autoInterval;
     const nextReview = futureDateString(interval, this.settings);
 
     const content = `---
@@ -3744,7 +3752,9 @@ ${body}
       video_id = m[1];
       author = (await askText(this.app, 'Author / channel (optional)', '')) || null;
       const dur = await askText(this.app, 'Total duration mm:ss or hh:mm:ss (optional)', '');
+      if (dur === null) return;
       total_seconds = parseTimeInput(dur);
+      if (dur.trim() && total_seconds == null) { new Notice('Invalid duration — use mm:ss or hh:mm:ss.'); return; }
       read_point_seconds = 0;
     } else if (sourceType === 'video') {
       const videosFolder = `${this.sourcesFolder()}/Videos`;
@@ -3759,7 +3769,9 @@ ${body}
       video_path = picked.path;
       author = (await askText(this.app, 'Author (optional)', '')) || null;
       const dur = await askText(this.app, 'Total duration mm:ss or hh:mm:ss (optional)', '');
+      if (dur === null) return;
       total_seconds = parseTimeInput(dur);
+      if (dur.trim() && total_seconds == null) { new Notice('Invalid duration — use mm:ss or hh:mm:ss.'); return; }
       read_point_seconds = 0;
     }
 

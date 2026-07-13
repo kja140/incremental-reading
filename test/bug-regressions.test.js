@@ -39,6 +39,18 @@ test('invalid clock components are rejected', () => {
 
 test('extract creation distinguishes cancellation from an automatic interval', () => {
   assert.match(main, /if \(customStr === null\) return;/);
+  assert.match(main, /Invalid interval — enter a positive whole number of days/);
+});
+
+test('asynchronous queue refreshes discard stale results', () => {
+  assert.match(main, /const generation = \+\+this\.rowsGeneration/);
+  assert.match(main, /generation !== this\.rowsGeneration/);
+});
+
+test('page, priority, and boost prompts reject partially numeric input', () => {
+  assert.doesNotMatch(main, /const p = parseInt\(raw, 10\)/);
+  assert.match(main, /Enter a positive whole page number/);
+  assert.match(main, /Invalid duration — use mm:ss or hh:mm:ss/);
 });
 
 test('split book validates chapter ordering before creating files', () => {
