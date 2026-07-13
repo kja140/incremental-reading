@@ -6,6 +6,11 @@
 - After a Spaced Repetition card is answered, **Grade and advance** now consumes that card's daily
   session row and continues to the next card or reading topic instead of reopening the same review.
 - Opening a card no longer removes it from the mixed session before it has been answered.
+- Mixed-session state is now stored in plugin data, so advancing works even when the optional legacy
+  Dashboard Markdown note is missing.
+- Completed empty sessions remain complete instead of rebuilding and resurfacing answered cards.
+- Cancelling topic grading no longer advances, and **Random due element** now launches card review
+  through the same Spaced Repetition handoff as the main session.
 
 ## 1.1.0 — 2026-07-13
 

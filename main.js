@@ -310,6 +310,10 @@ const DEFAULT_SETTINGS = {
     child_warn_threshold: 100,
     show_completed: false,
   },
+  session: {
+    date: null,
+    paths: [],
+  },
 };
 
 //  Date helpers
@@ -2279,7 +2283,8 @@ class IncrementalReadingPlugin extends Plugin {
 
   isSpacedRepetitionReady() {
     const commands = this.app.commands.listCommands?.() || [];
-    return commands.some(command => command.id === SPACED_REPETITION_REVIEW_COMMAND);
+    const ids = new Set(commands.map(command => command.id));
+    return ids.has(SPACED_REPETITION_REVIEW_COMMAND) && ids.has(SPACED_REPETITION_NOTE_COMMAND);
   }
 
   runSetupCheck() {
@@ -2381,13 +2386,17 @@ class IncrementalReadingPlugin extends Plugin {
   // `today_session_paths`). Returns active, not-reviewed-today items in
   // snapshot order. Null if no fresh snapshot exists.
   readSessionSnapshot() {
-    const dash = this.app.vault.getAbstractFileByPath(this.dashboardPath());
-    if (!dash) return null;
-    const fm = getFm(this.app, dash);
     const todayStr = todayDateString(this.settings);
-    if (!fm || fm.today_session_date !== todayStr) return null;
-    const paths = fm.today_session_paths;
-    if (!Array.isArray(paths) || paths.length === 0) return null;
+    let paths = null;
+    if (this.settings.session?.date === todayStr && Array.isArray(this.settings.session.paths)) {
+      paths = this.settings.session.paths;
+    } else {
+      // One-way compatibility with session snapshots written by versions <=1.1.0.
+      const dash = this.app.vault.getAbstractFileByPath(this.dashboardPath());
+      const fm = dash ? getFm(this.app, dash) : null;
+      if (fm?.today_session_date === todayStr && Array.isArray(fm.today_session_paths)) paths = fm.today_session_paths;
+    }
+    if (paths === null) return null;
     const today = todayDate();
     const out = [];
     const seen = new Set();
@@ -2406,10 +2415,11 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async persistSessionSnapshot(queue) {
+    const paths = queue.map(q => q.tfile?.path).filter(Boolean);
+    this.settings.session = { date: todayDateString(this.settings), paths };
+    await this.saveSettings();
     const dash = this.app.vault.getAbstractFileByPath(this.dashboardPath());
     if (!dash) return;
-    const paths = queue.map(q => q.tfile?.path).filter(Boolean);
-    if (!paths.length) return;
     try {
       await this.app.fileManager.processFrontMatter(dash, (fm) => {
         fm.today_session_paths = paths;
@@ -2428,6 +2438,10 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async consumeSessionItem(path) {
+    if (this.settings.session?.date === todayDateString(this.settings)) {
+      this.settings.session.paths = (this.settings.session.paths || []).filter(value => value !== path);
+      await this.saveSettings();
+    }
     const dash = this.app.vault.getAbstractFileByPath(this.dashboardPath());
     if (!dash) return;
     await this.app.fileManager.processFrontMatter(dash, fm => {
@@ -2448,7 +2462,7 @@ class IncrementalReadingPlugin extends Plugin {
   async nextElement() {
     const active = this.app.workspace.getActiveFile();
     let queue = this.readSessionSnapshot();
-    if (queue && queue.length) {
+    if (queue !== null) {
       queue = queue.filter(p => !active || p.tfile.path !== active.path);
     } else {
       const pool = this.buildDuePool();
@@ -2469,8 +2483,8 @@ class IncrementalReadingPlugin extends Plugin {
     const pool = this.buildDuePool();
     if (pool.length === 0) { new Notice('✨ Nothing due. Caught up.'); return; }
     const pick = pool[Math.floor(Math.random() * pool.length)];
-    await this.app.workspace.getLeaf(false).openFile(pick.tfile);
-    const action = pick.fm.type === 'source' ? '📖 Read' : '📝 Process';
+    await this.openLearningItem(pick);
+    const action = pick.fm.type === 'card' ? '🃏 Review' : (pick.fm.type === 'source' ? '📖 Read' : '📝 Process');
     new Notice(`🎲 ${action}: ${pick.tfile.basename} · p${pick.fm.priority ?? '—'} (1 of ${pool.length} due)`);
   }
 
@@ -2484,8 +2498,8 @@ class IncrementalReadingPlugin extends Plugin {
       await this.nextElement();
       return;
     }
-    await this.endSession();
-    await this.nextElement();
+    const graded = await this.endSession();
+    if (graded) await this.nextElement();
   }
 
   // ---- End Session (A-Factor topics; cards delegate to Spaced Repetition) -
@@ -2507,7 +2521,7 @@ class IncrementalReadingPlugin extends Plugin {
       this.reviewCardsInNote();
       return;
     }
-    await this._gradeTopic(active, fm, today);
+    return await this._gradeTopic(active, fm, today);
   }
 
   async _gradeTopic(file, fm, today) {
@@ -2657,6 +2671,7 @@ class IncrementalReadingPlugin extends Plugin {
     const typeLabel = fm.type === 'source' ? 'Source' : 'Extract';
     const doneMsg = markedDone ? ' | DONE' : '';
     new Notice(`${typeLabel}: priority ${priority} a=${round4(aFactor)} → next in ${interval}d (${nextReview})${doneMsg}`);
+    return true;
   }
 
   // Adaptive A-Factor tuning per SM canon. Multiplies a_factor by `factor`,

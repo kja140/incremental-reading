@@ -18,3 +18,19 @@ test('opening a card does not consume it before the review is answered', () => {
   assert.match(method, /reviewCardsInNote/);
   assert.doesNotMatch(method, /consumeSessionItem/);
 });
+
+test('grade and advance does not continue when topic grading is cancelled', () => {
+  const method = main.match(/async gradeAndAdvance\(\) \{([\s\S]*?)\n  \}\n\n  \/\/ ---- End Session/)?.[1] || '';
+  assert.match(method, /const graded = await this\.endSession\(\)/);
+  assert.match(method, /if \(graded\) await this\.nextElement\(\)/);
+});
+
+test('an empty current session is distinguished from a missing snapshot', () => {
+  const method = main.match(/async nextElement\(\) \{([\s\S]*?)\n  \}\n\n  async randomDue/)?.[1] || '';
+  assert.match(method, /if \(queue !== null\)/);
+});
+
+test('random due cards use the same Spaced Repetition handoff as session cards', () => {
+  const method = main.match(/async randomDue\(\) \{([\s\S]*?)\n  \}\n\n  async gradeAndAdvance/)?.[1] || '';
+  assert.match(method, /await this\.openLearningItem\(pick\)/);
+});
