@@ -1,5 +1,18 @@
 # Incremental Reading Toolkit changelog
 
+## 1.1.2 — 2026-07-13
+
+### Fixed
+- Knowledge-tree action buttons now stop drag/row events from swallowing clicks and remain visible.
+- Reordering resolves nodes by full path, so duplicate basenames no longer target the wrong node.
+- Boundary reorder actions show feedback instead of silently doing nothing.
+- Opening a tree node keeps the tree open and reuses a dedicated content tab; extracts no longer invoke
+  the source-only read-point command.
+
+### Added
+- Added an explicit **Move** action, a **Refresh** toolbar button, clickable type-summary filters, and
+  keyboard navigation for opening and expanding tree rows.
+
 ## 1.1.1 — 2026-07-13
 
 ### Fixed

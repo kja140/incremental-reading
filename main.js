@@ -65,6 +65,10 @@ function buildTreeIndex(pages) {
   return { pages: pages.slice(), byName, childrenOf, roots, duplicates };
 }
 
+function pageByPath(index, path) {
+  return index.pages.find(page => page.path === path) || null;
+}
+
 // True if moving `childName` under `newParentName` would create a cycle.
 // Walks UP from newParentName via effective parents; cycle if childName is reached.
 function wouldCreateCycle(index, childName, newParentName) {
@@ -100,7 +104,7 @@ function computeReorder(siblings, movedPath, targetIndex) {
   return writes;
 }
 // <<< tree-core-functions
-  return { linkTargetName, effectiveParent, siblingComparator, buildTreeIndex, wouldCreateCycle, computeReorder };
+  return { linkTargetName, effectiveParent, siblingComparator, buildTreeIndex, pageByPath, wouldCreateCycle, computeReorder };
 })();
 
 const spacedRepetitionCore = (function () {
@@ -1184,6 +1188,7 @@ class IRQueueView extends ItemView {
     this.plugin = plugin;
     this.filter = plugin.settings.queue.default_tag_filter || '';
     this.refreshTimer = null;
+    this.contentLeaf = null;
     this.modifyTimer = null;
   }
 
@@ -1809,6 +1814,8 @@ class KnowledgeTreeView extends ItemView {
       b2.onclick = () => { this._setExpandAll(true); this._renderBody(); };
       const b3 = bar.createEl('button', { text: 'Collapse all' });
       b3.onclick = () => { this._setExpandAll(false); this._renderBody(); };
+      const refresh = bar.createEl('button', { text: 'Refresh' });
+      refresh.onclick = () => this._renderBody();
     }
     const fi = bar.createEl('input', { cls: 'ir-tree-filter', type: 'text', placeholder: 'Filter by title or tag…' });
     fi.value = this.filter;
@@ -1880,7 +1887,11 @@ class KnowledgeTreeView extends ItemView {
     summary.empty();
     const counts = { category: 0, source: 0, extract: 0, card: 0 };
     for (const page of this.index.pages) counts[page.fm.type] = (counts[page.fm.type] || 0) + 1;
-    for (const [type, label] of [['category', 'categories'], ['source', 'sources'], ['extract', 'extracts'], ['card', 'cards']]) summary.createSpan({ text: `${TREE_ICONS[type]} ${counts[type]} ${label}` });
+    for (const [type, label] of [['category', 'categories'], ['source', 'sources'], ['extract', 'extracts'], ['card', 'cards']]) {
+      const chip = summary.createEl('button', { text: `${TREE_ICONS[type]} ${counts[type]} ${label}` });
+      chip.title = `Show ${label}`;
+      chip.onclick = () => { this.typeFilter = this.typeFilter === type ? 'all' : type; this._render(); };
+    }
   }
 
   _renderNode(parentEl, page, depth) {
@@ -1922,7 +1933,18 @@ class KnowledgeTreeView extends ItemView {
       this._attachActions(row, page);
     }
 
-    row.onclick = () => this._openPage(page);
+    row.tabIndex = 0;
+    row.setAttribute('role', 'treeitem');
+    row.setAttribute('aria-expanded', hasChildren ? String(expanded) : 'false');
+    row.onclick = (event) => {
+      if (event.target.closest('button, .ir-tree-twisty')) return;
+      this._openPage(page);
+    };
+    row.onkeydown = (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); this._openPage(page); }
+      if (hasChildren && event.key === 'ArrowRight' && !expanded) { event.preventDefault(); this.plugin.toggleExpanded(key); this._renderBody(); }
+      if (hasChildren && event.key === 'ArrowLeft' && expanded) { event.preventDefault(); this.plugin.toggleExpanded(key); this._renderBody(); }
+    };
 
     if (expanded && hasChildren) {
       for (const c of children) this._renderNode(parentEl, c, depth + 1);
@@ -1953,9 +1975,14 @@ class KnowledgeTreeView extends ItemView {
   }
 
   async _openPage(page) {
-    const leaf = this.plugin.app.workspace.getLeaf(false);
-    await leaf.openFile(page.tfile);
-    if (page.fm.type === 'source' || page.fm.type === 'extract') {
+    let leaf = this.contentLeaf;
+    if (!leaf || !leaf.view) {
+      leaf = this.plugin.app.workspace.getLeaf('tab');
+      this.contentLeaf = leaf;
+    }
+    await leaf.openFile(page.tfile, { active: true });
+    this.plugin.app.workspace.revealLeaf(leaf);
+    if (page.fm.type === 'source') {
       this.plugin.app.commands.executeCommandById(`${this.plugin.manifest.id}:jump-to-read-point`);
     }
   }
@@ -1981,18 +2008,23 @@ class KnowledgeTreeView extends ItemView {
 
   _attachActions(row, page) {
     const actions = row.createDiv({ cls: 'ir-tree-actions' });
+    actions.addEventListener('pointerdown', event => event.stopPropagation());
+    actions.addEventListener('click', event => event.stopPropagation());
+    const move = actions.createEl('button', { text: 'Move' });
+    move.type = 'button'; move.draggable = false; move.title = 'Move under another node';
+    move.onclick = async (e) => { e.preventDefault(); e.stopPropagation(); await this.plugin.reparentPath(page.path); this._renderBody(); };
     const up = actions.createEl('button', { text: '↑' });
-    up.title = 'Move up';
-    up.onclick = async (e) => { e.stopPropagation(); await this.plugin.reorderSibling(page.path, -1); this._renderBody(); };
+    up.type = 'button'; up.draggable = false; up.title = 'Move up';
+    up.onclick = async (e) => { e.preventDefault(); e.stopPropagation(); await this.plugin.reorderSibling(page.path, -1); this._renderBody(); };
     const down = actions.createEl('button', { text: '↓' });
-    down.title = 'Move down';
-    down.onclick = async (e) => { e.stopPropagation(); await this.plugin.reorderSibling(page.path, +1); this._renderBody(); };
+    down.type = 'button'; down.draggable = false; down.title = 'Move down';
+    down.onclick = async (e) => { e.preventDefault(); e.stopPropagation(); await this.plugin.reorderSibling(page.path, +1); this._renderBody(); };
     const ren = actions.createEl('button', { text: '✎' });
-    ren.title = 'Rename';
-    ren.onclick = async (e) => { e.stopPropagation(); await this.plugin.renameTreeNode(page.path); this._renderBody(); };
+    ren.type = 'button'; ren.draggable = false; ren.title = 'Rename';
+    ren.onclick = async (e) => { e.preventDefault(); e.stopPropagation(); await this.plugin.renameTreeNode(page.path); this._renderBody(); };
     const dis = actions.createEl('button', { text: '✕' });
-    dis.title = 'Dismiss';
-    dis.onclick = async (e) => { e.stopPropagation(); await this.plugin.dismissTreeNode(page.path); this._renderBody(); };
+    dis.type = 'button'; dis.draggable = false; dis.title = 'Dismiss';
+    dis.onclick = async (e) => { e.preventDefault(); e.stopPropagation(); await this.plugin.dismissTreeNode(page.path); this._renderBody(); };
   }
 }
 
@@ -2794,9 +2826,15 @@ class IncrementalReadingPlugin extends Plugin {
   async reparentActive() {
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') { new Notice('No active markdown element'); return; }
+    return await this.reparentPath(active.path);
+  }
+
+  async reparentPath(path) {
+    const active = this.app.vault.getAbstractFileByPath(path);
+    if (!active || active.extension !== 'md') { new Notice('Tree node not found'); return false; }
     const fm = getFm(this.app, active);
     if (!fm || !['category', 'source', 'extract', 'card'].includes(fm.type)) {
-      new Notice('Active note is not an incremental reading element'); return;
+      new Notice('Node is not an incremental reading element'); return false;
     }
     const idx = this.buildTreeIndex();
     const candidates = idx.pages.filter(p =>
@@ -2806,16 +2844,17 @@ class IncrementalReadingPlugin extends Plugin {
     displays.unshift('⤴ (top level / Unfiled)');
     values.unshift('::root::');
     const picked = await pickFromList(this.app, displays, values, 'Move under…');
-    if (picked == null) return;
+    if (picked == null) return false;
     await this.reparent(active.path, picked === '::root::' ? null : picked);
+    return true;
   }
 
   async reorderSibling(path, dir) {
     const f = this.app.vault.getAbstractFileByPath(path);
     if (!f) return;
     const idx = this.buildTreeIndex();
-    const page = idx.byName.get(f.basename.toLowerCase());
-    if (!page) return;
+    const page = treeCore.pageByPath(idx, path);
+    if (!page) { new Notice('Tree node not found'); return false; }
     const parentName = treeCore.effectiveParent(page.fm);
     let siblings;
     if (parentName) {
@@ -2830,15 +2869,19 @@ class IncrementalReadingPlugin extends Plugin {
     }
     const order = siblings.map(s => ({ path: s.path, tree_order: s.fm && s.fm.tree_order }));
     const curIdx = order.findIndex(s => s.path === path);
-    if (curIdx < 0) return;
+    if (curIdx < 0) { new Notice('Could not locate this node among its siblings'); return false; }
     const targetIndex = curIdx + dir;
-    if (targetIndex < 0 || targetIndex >= order.length) return;
+    if (targetIndex < 0 || targetIndex >= order.length) {
+      new Notice(dir < 0 ? 'Already the first sibling' : 'Already the last sibling');
+      return false;
+    }
     const writes = treeCore.computeReorder(order, path, targetIndex);
     for (const w of writes) {
       const tf = this.app.vault.getAbstractFileByPath(w.path);
       if (tf) await this.app.fileManager.processFrontMatter(tf, (fm) => { fm.tree_order = w.tree_order; });
     }
     this._refreshTreeViews();
+    return true;
   }
 
   async renameTreeNode(path) {

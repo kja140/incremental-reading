@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { effectiveParent, buildTreeIndex, linkTargetName } = require('../tree-core.js');
+const { effectiveParent, buildTreeIndex, linkTargetName, pageByPath } = require('../tree-core.js');
 
 const page = (path, basename, fm) => ({ path, basename, fm });
 
@@ -60,6 +60,16 @@ test('buildTreeIndex keeps duplicate basenames visible and refuses ambiguous par
   assert.equal(idx.duplicates.has('shared'), true);
   assert.deepEqual(idx.roots.map(p => p.path).sort(), pages.map(p => p.path).sort());
   assert.equal(idx.childrenOf.has('shared'), false);
+});
+
+test('pageByPath resolves the correct node when basenames are duplicated', () => {
+  const pages = [
+    page('Sources/A/Shared.md', 'Shared', { type: 'source' }),
+    page('Sources/B/Shared.md', 'Shared', { type: 'source' }),
+  ];
+  const idx = buildTreeIndex(pages);
+  assert.equal(pageByPath(idx, 'Sources/B/Shared.md').path, 'Sources/B/Shared.md');
+  assert.equal(pageByPath(idx, 'missing.md'), null);
 });
 
 test('linkTargetName returns a bare (non-wikilink) string as-is — frontmatter may store a plain basename', () => {

@@ -58,6 +58,10 @@ function buildTreeIndex(pages) {
   return { pages: pages.slice(), byName, childrenOf, roots, duplicates };
 }
 
+function pageByPath(index, path) {
+  return index.pages.find(page => page.path === path) || null;
+}
+
 // True if moving `childName` under `newParentName` would create a cycle.
 // Walks UP from newParentName via effective parents; cycle if childName is reached.
 function wouldCreateCycle(index, childName, newParentName) {
@@ -94,4 +98,4 @@ function computeReorder(siblings, movedPath, targetIndex) {
 }
 // <<< tree-core-functions
 
-module.exports = { linkTargetName, effectiveParent, siblingComparator, buildTreeIndex, wouldCreateCycle, computeReorder };
+module.exports = { linkTargetName, effectiveParent, siblingComparator, buildTreeIndex, pageByPath, wouldCreateCycle, computeReorder };
