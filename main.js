@@ -394,6 +394,20 @@ function isActiveIR(fm) {
   return true;
 }
 
+function isQueueVisibleIR(fm) {
+  if (!fm) return false;
+  if (fm.type !== 'source' && fm.type !== 'extract' && fm.type !== 'card') return false;
+  return !['done', 'container', 'dismissed'].includes(fm.status);
+}
+
+function spacedRepetitionCardIsDue(content, today) {
+  const dueDates = [...String(content || '').matchAll(/<!--SR:!?(\d{4}-\d{2}-\d{2})(?:,[^>]*)?-->/g)]
+    .map(match => match[1]);
+  if (!dueDates.length) return true; // New, unscheduled card.
+  const todayString = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  return dueDates.some(date => date <= todayString);
+}
+
 // ============================================================================
 //  A-Factor (topic scheduling) — progress-aware
 // ============================================================================
@@ -462,8 +476,14 @@ function parseInlineCards(filePath, body, settings) {
   const lines = body.split('\n');
   const out = [];
 
-  const qa = new RegExp(s.qa_regex);
-  const cloze = new RegExp(s.cloze_regex, 'g');
+  let qa, cloze;
+  try {
+    qa = new RegExp(s.qa_regex);
+    cloze = new RegExp(s.cloze_regex, 'g');
+  } catch (error) {
+    throw new Error(`Invalid inline-card regular expression: ${error.message}`);
+  }
+  if (qa.global) throw new Error('The Q::A regular expression must not use the global flag.');
 
   // The same literal (e.g. `==voltage angle==`) on two lines hashes to the same
   // id, colliding so only one card is gradable and the other sticks in the queue.
@@ -1233,18 +1253,19 @@ class IRQueueView extends ItemView {
     this._renderTimeline(root);
   }
 
-  _renderRows(root) {
-    const filterInput = root.querySelector('.ir-queue-filter');
-    while (filterInput && filterInput.nextSibling) filterInput.nextSibling.remove();
+  async _renderRows(root) {
+    let sectionsEl = root.querySelector('.ir-queue-sections');
+    if (!sectionsEl) sectionsEl = root.createDiv({ cls: 'ir-queue-sections' });
+    sectionsEl.empty();
 
     const today = todayDate();
 
     // 1. Today's Session — snapshot order (matches dashboard).
-    let session = this.plugin.readSessionSnapshot();
+    let session = await this.plugin.readSessionSnapshot();
     if (!session) {
       // No fresh snapshot — derive but DO NOT persist.
       // Persisting would race with the dashboard's own snapshot logic.
-      const pool = this.plugin.buildDuePool({ skipCurrent: false });
+      const pool = await this.plugin.buildDuePool({ skipCurrent: false });
       session = this.plugin.buildInterleavedQueue(pool, today);
     }
 
@@ -1257,7 +1278,7 @@ class IRQueueView extends ItemView {
       if (sessionPaths.has(file.path)) continue;
       const cache = this.plugin.app.metadataCache.getFileCache(file);
       const fm = cache?.frontmatter;
-      if (!isActiveIR(fm) || fm.type === 'card') continue;
+      if (!isQueueVisibleIR(fm) || fm.type === 'card') continue;
       if (this._filterMiss(cache, file)) continue;
       const row = { tfile: file, file, fm };
       if (fm.status === 'pending' || fm.status === 'inbox') groups.newItems.push(row);
@@ -1287,10 +1308,10 @@ class IRQueueView extends ItemView {
     groups.active.sort(sortFn);
 
     // 5. Render reading topics. Card queues belong to Spaced Repetition.
-    this._renderSection(root, "Today's Session", sessionFiltered);
-    this._renderSection(root, 'Overdue (not in session)', groups.overdue);
-    this._renderSection(root, 'New', groups.newItems);
-    this._renderSection(root, 'Active (no due)', groups.active);
+    this._renderSection(sectionsEl, "Today's Session", sessionFiltered);
+    this._renderSection(sectionsEl, 'Overdue (not in session)', groups.overdue);
+    this._renderSection(sectionsEl, 'New', groups.newItems);
+    this._renderSection(sectionsEl, 'Active (no due)', groups.active);
   }
 
   _filterMiss(cache, file) {
@@ -1679,7 +1700,7 @@ class MainDashboardView extends ItemView {
     card.createDiv({ cls: 'ir-dashboard-metric-value', text: String(value) });
     card.createDiv({ cls: 'ir-dashboard-metric-label', text: label });
   }
-  render() {
+  async render() {
     const root = this.containerEl.children[1];
     root.empty(); root.addClass('ir-dashboard-root');
     const files = getAllIRFiles(this.plugin.app, this.plugin.settings);
@@ -1716,8 +1737,9 @@ class MainDashboardView extends ItemView {
     const grid = root.createDiv({ cls: 'ir-dashboard-grid' });
     const sessionPanel = grid.createDiv({ cls: 'ir-dashboard-panel' });
     sessionPanel.createEl('h2', { text: 'Next mixed session' });
-    const session = this.plugin.readSessionSnapshot()
-      || this.plugin.buildInterleavedQueue(this.plugin.buildDuePool({ skipCurrent: false }), today);
+    const savedSession = await this.plugin.readSessionSnapshot();
+    const session = savedSession
+      || this.plugin.buildInterleavedQueue(await this.plugin.buildDuePool({ skipCurrent: false }), today);
     if (!session.length) sessionPanel.createEl('p', { text: 'Nothing due — you are caught up.' });
     for (const row of session.slice(0, 12)) {
       const item = sessionPanel.createDiv({ cls: 'ir-dashboard-session-row' });
@@ -1877,7 +1899,7 @@ class KnowledgeTreeView extends ItemView {
         cur = next;
       }
     }
-    this._match = { keep };
+    this._match = { keep, forceExpand: !!f || this.typeFilter !== 'all' };
   }
 
   _renderSummary() {
@@ -1901,7 +1923,7 @@ class KnowledgeTreeView extends ItemView {
     const key = page.path;
     const children = this.index.childrenOf.get(page.basename.toLowerCase()) || [];
     const hasChildren = children.length > 0;
-    const expanded = !!this._match || this.plugin.isExpanded(key);
+    const expanded = !!this._match?.forceExpand || this.plugin.isExpanded(key);
 
     const row = parentEl.createDiv({ cls: 'ir-tree-row' });
     // Indent scales with tree depth, so it stays inline via a CSS var.
@@ -1955,7 +1977,7 @@ class KnowledgeTreeView extends ItemView {
     const visible = this._match ? loose.filter(p => this._match.keep.has(p.path)) : loose;
     if (!visible.length) return;
     const key = '::unfiled::';
-    const expanded = !!this._match || this.plugin.isExpanded(key);
+    const expanded = !!this._match?.forceExpand || this.plugin.isExpanded(key);
     const row = body.createDiv({ cls: 'ir-tree-row ir-tree-unfiled' });
     const tw = row.createSpan({ cls: 'ir-tree-twisty', text: expanded ? '▼' : '▶' });
     tw.onclick = (e) => { e.stopPropagation(); this.plugin.toggleExpanded(key); this._renderBody(); };
@@ -2339,6 +2361,14 @@ class IncrementalReadingPlugin extends Plugin {
     if (this._spacedRepetitionSettings().multilineCardSeparator === this._spacedRepetitionSettings().multilineReversedCardSeparator) {
       issues.push('Basic and bidirectional card separators must differ.');
     }
+    try {
+      const inline = this.settings.inline_cards;
+      const qa = new RegExp(inline.qa_regex);
+      new RegExp(inline.cloze_regex, 'g');
+      if (qa.global) issues.push('The inline Q::A regular expression must not use the global flag.');
+    } catch (error) {
+      issues.push(`Inline-card regular expression is invalid: ${error.message}`);
+    }
     if (issues.length) {
       new Notice(`Setup needs attention:\n- ${issues.join('\n- ')}`, 12000);
       return false;
@@ -2398,7 +2428,7 @@ class IncrementalReadingPlugin extends Plugin {
 
   // ---- Next / Random -----------------------------------------------------
 
-  buildDuePool({ skipCurrent = true } = {}) {
+  async buildDuePool({ skipCurrent = true } = {}) {
     const today = todayDate();
     const active = this.app.workspace.getActiveFile();
     const out = [];
@@ -2408,6 +2438,8 @@ class IncrementalReadingPlugin extends Plugin {
       if (!isActiveIR(fm)) continue;
       if (fm.type === 'card') {
         if (this.settings.queue.mix_cards === false || !this.isSpacedRepetitionReady()) continue;
+        const content = await this.app.vault.cachedRead(f);
+        if (!spacedRepetitionCardIsDue(content, today)) continue;
       } else if (!isDue(fm, today, this.settings)) continue;
       out.push({ tfile: f, fm });
     }
@@ -2417,7 +2449,7 @@ class IncrementalReadingPlugin extends Plugin {
   // Read the dashboard's session snapshot (path list persisted as
   // `today_session_paths`). Returns active, not-reviewed-today items in
   // snapshot order. Null if no fresh snapshot exists.
-  readSessionSnapshot() {
+  async readSessionSnapshot() {
     const todayStr = todayDateString(this.settings);
     let paths = null;
     if (this.settings.session?.date === todayStr && Array.isArray(this.settings.session.paths)) {
@@ -2440,7 +2472,11 @@ class IncrementalReadingPlugin extends Plugin {
       const f = getFm(this.app, tf);
       if (!isActiveIR(f)) continue;
       if (f.last_reviewed === todayStr) continue;
-      if (f.type !== 'card' && !isDue(f, today, this.settings)) continue;
+      if (f.type === 'card') {
+        if (this.settings.queue.mix_cards === false || !this.isSpacedRepetitionReady()) continue;
+        const content = await this.app.vault.cachedRead(tf);
+        if (!spacedRepetitionCardIsDue(content, today)) continue;
+      } else if (!isDue(f, today, this.settings)) continue;
       out.push({ tfile: tf, fm: f });
     }
     return out;
@@ -2493,11 +2529,11 @@ class IncrementalReadingPlugin extends Plugin {
 
   async nextElement() {
     const active = this.app.workspace.getActiveFile();
-    let queue = this.readSessionSnapshot();
+    let queue = await this.readSessionSnapshot();
     if (queue !== null) {
       queue = queue.filter(p => !active || p.tfile.path !== active.path);
     } else {
-      const pool = this.buildDuePool();
+      const pool = await this.buildDuePool();
       if (pool.length === 0) { new Notice('✨ Nothing due. Caught up.'); return; }
       queue = this.buildInterleavedQueue(pool, todayDate());
       // Persist so dashboard renders the same order on next open.
@@ -2512,7 +2548,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async randomDue() {
-    const pool = this.buildDuePool();
+    const pool = await this.buildDuePool();
     if (pool.length === 0) { new Notice('✨ Nothing due. Caught up.'); return; }
     const pick = pool[Math.floor(Math.random() * pool.length)];
     await this.openLearningItem(pick);
@@ -2924,7 +2960,13 @@ class IncrementalReadingPlugin extends Plugin {
       return;
     }
     const body = await this.app.vault.cachedRead(active);
-    const parsed = parseInlineCards(active.path, body, this.settings);
+    let parsed;
+    try {
+      parsed = parseInlineCards(active.path, body, this.settings);
+    } catch (error) {
+      new Notice(error.message, 8000);
+      return;
+    }
     if (!parsed.length) { new Notice('No inline cards found'); return; }
 
     const grouped = new Map();
@@ -3285,6 +3327,7 @@ class IncrementalReadingPlugin extends Plugin {
     const autoInterval = priorityToInterval(priority);
 
     const customStr = await askText(this.app, `First interval in days (blank for auto: ${autoInterval}d)`, '');
+    if (customStr === null) return;
     const interval = (customStr && Number.isFinite(Number(customStr)))
       ? Math.max(1, Math.round(Number(customStr))) : autoInterval;
     const nextReview = futureDateString(interval, this.settings);
@@ -3665,8 +3708,11 @@ ${body}
     if (!sourceType) return;
     const priStr = await askText(this.app, 'Priority (1-100, 1=highest)', '50');
     if (priStr === null) return;
-    const pNum = parseInt(priStr, 10);
-    if (!Number.isFinite(pNum) || pNum < 1 || pNum > 100) {
+    if (!/^\d+$/.test(priStr.trim())) {
+      new Notice('Invalid priority — enter an integer from 1 to 100.'); return;
+    }
+    const pNum = Number(priStr);
+    if (!Number.isInteger(pNum) || pNum < 1 || pNum > 100) {
       new Notice('Invalid priority — enter an integer from 1 to 100.'); return;
     }
 
@@ -3682,7 +3728,11 @@ ${body}
       pdf_path = await askText(this.app, 'PDF path (vault-relative or absolute)', '');
       if (pdf_path) pdf_path = pdf_path.replace(/^['"]|['"]$/g, '');
       const pages = await askText(this.app, 'Total pages', '');
-      total_pages = pages ? parseInt(pages, 10) : null;
+      if (pages === null) return;
+      if (pages.trim() && !/^[1-9]\d*$/.test(pages.trim())) {
+        new Notice('Invalid total pages — enter a positive integer.'); return;
+      }
+      total_pages = pages.trim() ? Number(pages) : null;
       read_point = 1;
     } else if (sourceType === 'article') {
       source_url = (await askText(this.app, 'Source URL (optional)', '')) || null;
@@ -3778,8 +3828,9 @@ ${body}
 
     const priStr = await askText(this.app, 'Priority (1-100, 1=highest)', '50');
     if (priStr === null) return;
-    const p = parseInt(priStr, 10);
-    if (isNaN(p) || p < 1 || p > 100) { new Notice('Invalid priority.'); return; }
+    if (!/^\d+$/.test(priStr.trim())) { new Notice('Invalid priority.'); return; }
+    const p = Number(priStr);
+    if (!Number.isInteger(p) || p < 1 || p > 100) { new Notice('Invalid priority.'); return; }
 
     const today = todayDateString(this.settings);
     const interval = priorityToInterval(p);
@@ -3791,6 +3842,16 @@ ${body}
       total_pages: Number(existing?.total_pages) || null,
       total_seconds: Number(existing?.total_seconds) || null,
     }));
+
+    const sourcesFolder = this.sourcesFolder();
+    await ensureFolder(this.app, sourcesFolder);
+    const baseName = slugifyForFolder(active.basename) || 'Untitled';
+    let newPath = `${sourcesFolder}/${baseName}.md`;
+    let suffix = 2;
+    while (active.path !== newPath && this.app.vault.getAbstractFileByPath(newPath)) {
+      newPath = `${sourcesFolder}/${baseName} ${suffix++}.md`;
+    }
+    if (active.path !== newPath) await this.app.fileManager.renameFile(active, newPath);
 
     await this.app.fileManager.processFrontMatter(active, (fm) => {
       fm.type = 'source';
@@ -3817,19 +3878,7 @@ ${body}
       if (!fm.tags.includes('ir/source')) fm.tags.push('ir/source');
     });
 
-    const sourcesFolder = this.sourcesFolder();
-    await ensureFolder(this.app, sourcesFolder);
-    const safeName = (slugifyForFolder(active.basename) || 'Untitled') + '.md';
-    const newPath = `${sourcesFolder}/${safeName}`;
-    let renameNote = '';
-    if (active.path === newPath) {
-      // already in sources
-    } else if (this.app.vault.getAbstractFileByPath(newPath)) {
-      renameNote = ' · NOT moved (target exists)';
-    } else {
-      await this.app.fileManager.renameFile(active, newPath);
-    }
-    new Notice(`Imported (${initialStatus}) · p${p} · review +${interval}d${renameNote}`);
+    new Notice(`Imported (${initialStatus}) · p${p} · review +${interval}d`);
   }
 
   // ---- Navigation --------------------------------------------------------
@@ -3981,6 +4030,15 @@ ${body}
       if (!fm) continue;
       if (fm.type !== 'source' && fm.type !== 'extract' && fm.type !== 'card') continue;
       if (fm.type === 'card') { nCard++; continue; }
+      const lr = parseDateValue(fm.last_reviewed, this.settings);
+      if (lr) {
+        if (lr.getTime() === today.getTime()) {
+          todayRev++;
+          if (fm.type === 'source') todaySrc++;
+          else if (fm.type === 'extract') todayExt++;
+        }
+        if (lr >= weekAgo) weekRev++;
+      }
       if (fm.status === 'done') { nDone++; continue; }
       if (fm.status === 'dismissed') { nDismissed++; continue; }
       if (fm.status === 'container') continue;
@@ -3994,15 +4052,6 @@ ${body}
         else if (diff === 0) dueToday++;
         else future++;
       } else dueToday++;
-      const lr = parseDateValue(fm.last_reviewed, this.settings);
-      if (lr) {
-        if (lr.getTime() === today.getTime()) {
-          todayRev++;
-          if (fm.type === 'source') todaySrc++;
-          else if (fm.type === 'extract') todayExt++;
-        }
-        if (lr >= weekAgo) weekRev++;
-      }
     }
 
     let lifetime = 0;
@@ -4117,11 +4166,14 @@ ${sectionBody}
       '');
     if (!toc) return;
     const lines = toc.split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) { new Notice('Enter at least one chapter.'); return; }
     const chapters = [];
     for (const line of lines) {
       const m = line.match(/^(\d+)\s*(?:[-–—]\s*(\d+))?\s*[:：]\s*(.+)$/);
       if (!m) { new Notice(`Can't parse: "${line}"`); return; }
-      chapters.push({ start: parseInt(m[1], 10), end: m[2] ? parseInt(m[2], 10) : null, title: m[3].trim() });
+      const title = m[3].trim();
+      if (!title) { new Notice(`Chapter title is missing: "${line}"`); return; }
+      chapters.push({ start: Number(m[1]), end: m[2] ? Number(m[2]) : null, title });
     }
     for (let i = 0; i < chapters.length; i++) {
       if (chapters[i].end == null) {
@@ -4130,13 +4182,26 @@ ${sectionBody}
           : (fm.total_pages ?? chapters[i].start);
       }
     }
+    const totalPages = Number(fm.total_pages) > 0 ? Number(fm.total_pages) : null;
+    for (let i = 0; i < chapters.length; i++) {
+      const chapter = chapters[i];
+      const previous = chapters[i - 1];
+      if (chapter.start < 1 || chapter.end < chapter.start) {
+        new Notice(`Invalid page range for "${chapter.title}".`); return;
+      }
+      if (previous && chapter.start <= previous.end) {
+        new Notice(`Chapter ranges overlap or are out of order near "${chapter.title}".`); return;
+      }
+      if (totalPages && chapter.end > totalPages) {
+        new Notice(`"${chapter.title}" ends after the source's ${totalPages} pages.`); return;
+      }
+    }
 
     const parentTitle = active.basename;
     const priority = fm.priority ?? 50;
     const baseInterval = priorityToInterval(priority);
     const sourceType = fm.source_type ?? 'book';
     const pdfPath = fm.pdf_path ?? fm.pdf_vault_path ?? fm.sioyek_path ?? null;
-    const totalPages = fm.total_pages ?? null;
     const dateAdded = fm.date_added ?? todayDateString(this.settings);
     const folder = this.sourcesFolder();
     await ensureFolder(this.app, folder);
@@ -4231,8 +4296,14 @@ function parseTimeInput(input) {
   if (/^\d+$/.test(s)) return parseInt(s, 10);
   const parts = s.split(':').map(p => p.trim());
   if (!parts.every(p => /^\d+$/.test(p))) return null;
-  if (parts.length === 2) return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
-  if (parts.length === 3) return parseInt(parts[0], 10) * 3600 + parseInt(parts[1], 10) * 60 + parseInt(parts[2], 10);
+  if (parts.length === 2) {
+    const [minutes, seconds] = parts.map(Number);
+    return seconds < 60 ? minutes * 60 + seconds : null;
+  }
+  if (parts.length === 3) {
+    const [hours, minutes, seconds] = parts.map(Number);
+    return minutes < 60 && seconds < 60 ? hours * 3600 + minutes * 60 + seconds : null;
+  }
   return null;
 }
 
