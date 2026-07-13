@@ -3,11 +3,12 @@
 .ir-queue-header { font-weight: 600; margin-bottom: 8px; }
 .ir-queue-section { margin-bottom: 12px; }
 .ir-queue-section-title { font-weight: 600; opacity: 0.7; margin-bottom: 4px; }
-.ir-queue-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; cursor: pointer; }
+.ir-queue-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; cursor: pointer; content-visibility: auto; contain-intrinsic-size: auto 28px; }
 .ir-queue-row:hover { background: var(--background-modifier-hover); }
 .ir-queue-row-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ir-queue-row-pri { font-variant-numeric: tabular-nums; opacity: 0.7; }
 .ir-queue-row-stall { color: var(--text-accent); }
+.ir-queue-show-more { width: 100%; margin-top: 8px; }
 .ir-queue-filter { width: 100%; margin-bottom: 8px; }
 .ir-timeline-panel { border-top: 1px solid var(--background-modifier-border); padding-top: 8px; margin-top: 8px; }
 .ir-timeline-row { padding: 2px 4px; cursor: pointer; }

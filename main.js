@@ -932,16 +932,10 @@ function irViewSignature(app, file) {
   return JSON.stringify([selected, inlineTags]);
 }
 
-function captureIRViewSignatures(app, settings) {
-  return new Map(getAllIRFiles(app, settings).map(file => [file.path, irViewSignature(app, file)]));
-}
-
-function irViewMetadataChanged(view, file) {
-  const next = irViewSignature(view.plugin.app, file);
-  const previous = view.irViewSignatures.get(file.path) ?? null;
-  if (next === null) view.irViewSignatures.delete(file.path);
-  else view.irViewSignatures.set(file.path, next);
-  return next !== previous;
+function isViewVisible(view) {
+  const el = view?.containerEl;
+  if (!el?.isConnected) return false;
+  return el.offsetParent !== null || (typeof el.getClientRects === 'function' && el.getClientRects().length > 0);
 }
 
 // Obsidian's cachedRead still returns a promise. Checking hundreds of card
@@ -964,6 +958,16 @@ async function filterAsyncConcurrent(items, predicate, concurrency = 16) {
 function configuredPath(settings, key, fallback) {
   const value = String(settings?.paths?.[key] || fallback).trim();
   return normalizePath(value);
+}
+
+function isPathInIRCollection(settings, path) {
+  const normalized = normalizePath(String(path || ''));
+  return [
+    configuredPath(settings, 'sources', SOURCES_FOLDER),
+    configuredPath(settings, 'extracts', EXTRACTS_FOLDER),
+    configuredPath(settings, 'cards', CARDS_FOLDER),
+    configuredPath(settings, 'categories', CATEGORIES_FOLDER),
+  ].some(folder => normalized === folder || normalized.startsWith(folder + '/'));
 }
 
 function getAllIRFiles(app, settings) {
@@ -1182,9 +1186,8 @@ async function resolveIRFromActive(app, settings, { allowCard = true, allowPdfFa
 }
 
 // BFS subtree walk via parent + source links.
-function walkSubtree(app, settings, rootBasename, rootPath, { includeCards = true } = {}) {
-  const allPages = getAllIRFiles(app, settings)
-    .map(f => ({ tfile: f, fm: getFm(app, f) }))
+function walkSubtree(app, settings, rootBasename, rootPath, { includeCards = true, rows = null } = {}) {
+  const allPages = (rows || getAllIRFiles(app, settings).map(f => ({ tfile: f, fm: getFm(app, f) })))
     .filter(p => p.fm && (p.fm.type === 'source' || p.fm.type === 'extract' || (includeCards && p.fm.type === 'card')));
   const paths = new Set([rootPath]);
   const frontier = [rootBasename];
@@ -1259,6 +1262,14 @@ class IRQueueView extends ItemView {
     this.contentLeaf = null;
     this.modifyTimer = null;
     this.rowsGeneration = 0;
+    this.queueRevision = 0;
+    this.queueModel = null;
+    this.queueModelPromise = null;
+    this.timelineEl = null;
+    this.activeTimelinePath = null;
+    this.collectionRevision = 0;
+    this.sectionLimits = new Map();
+    this.needsRowsRender = false;
   }
 
   getViewType() { return IR_QUEUE_VIEW_TYPE; }
@@ -1266,27 +1277,68 @@ class IRQueueView extends ItemView {
   getIcon() { return 'list-checks'; }
 
   async onOpen() {
-    this.irViewSignatures = captureIRViewSignatures(this.plugin.app, this.plugin.settings);
+    this.collectionRevision = this.plugin.irCollectionRevision;
     this._render();
     this.registerEvent(this.plugin.app.metadataCache.on('changed', (file) => {
-      if (!irViewMetadataChanged(this, file)) return;
-      if (this.modifyTimer) window.clearTimeout(this.modifyTimer);
-      this.modifyTimer = window.setTimeout(() => this._render(), 250);
+      if (this.collectionRevision === this.plugin.irCollectionRevision) return;
+      this.collectionRevision = this.plugin.irCollectionRevision;
+      this._invalidateQueueModel();
+      this._scheduleRowsRender('metadata');
+      if (file.path === this.plugin.app.workspace.getActiveFile()?.path) this._refreshTimeline(true);
     }));
     // Spaced Repetition stores scheduling in an HTML comment in the card body,
     // so card-body writes are the one non-frontmatter edit that affects queues.
     this.registerEvent(this.plugin.app.vault.on('modify', (file) => {
       if (getFm(this.plugin.app, file)?.type !== 'card') return;
-      if (this.modifyTimer) window.clearTimeout(this.modifyTimer);
-      this.modifyTimer = window.setTimeout(() => this._renderRows(this.containerEl.children[1]), 250);
+      this._invalidateQueueModel();
+      this._scheduleRowsRender('card-modify');
     }));
-    this.registerEvent(this.plugin.app.workspace.on('active-leaf-change', () => this._render()));
-    this.refreshTimer = window.setInterval(() => this._render(), 30000);
+    for (const event of ['create', 'delete', 'rename']) {
+      this.registerEvent(this.plugin.app.vault.on(event, () => {
+        this._invalidateQueueModel();
+        this._scheduleRowsRender(`vault-${event}`);
+      }));
+    }
+    // Navigation changes only the active note's timeline. Queue rows are
+    // independent of the active file and must not be rebuilt on every click.
+    this.registerEvent(this.plugin.app.workspace.on('file-open', file => this._refreshTimeline(false, file)));
+    this.registerEvent(this.plugin.app.workspace.on('active-leaf-change', () => this._refreshTimeline()));
+    this._scheduleDateRefresh();
   }
 
   async onClose() {
-    if (this.refreshTimer) window.clearInterval(this.refreshTimer);
+    if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
     if (this.modifyTimer) window.clearTimeout(this.modifyTimer);
+  }
+
+  _invalidateQueueModel() {
+    this.queueRevision++;
+    this.queueModel = null;
+    this.queueModelPromise = null;
+  }
+
+  _scheduleRowsRender(reason) {
+    if (this.plugin.collectionRenderDeferrals > 0) {
+      this.needsRowsRender = true;
+      return;
+    }
+    this.needsRowsRender = false;
+    if (this.modifyTimer) window.clearTimeout(this.modifyTimer);
+    this.modifyTimer = window.setTimeout(() => {
+      this.modifyTimer = null;
+      this._renderRows(this.containerEl.children[1], reason);
+    }, 150);
+  }
+
+  _scheduleDateRefresh() {
+    if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+    const nextDay = new Date();
+    nextDay.setHours(24, 0, 0, 100);
+    this.refreshTimer = window.setTimeout(() => {
+      this._invalidateQueueModel();
+      this._renderRows(this.containerEl.children[1], 'date-change');
+      this._scheduleDateRefresh();
+    }, Math.max(1000, nextDay.getTime() - Date.now()));
   }
 
   _render() {
@@ -1304,55 +1356,34 @@ class IRQueueView extends ItemView {
     filterInput.value = this.filter;
     filterInput.addEventListener('input', e => {
       this.filter = e.target.value;
-      this._renderRows(root);
+      this._renderRows(root, 'filter');
     });
 
-    this._renderRows(root);
-    this._renderTimeline(root);
+    this.sectionsEl = root.createDiv({ cls: 'ir-queue-sections' });
+    this.timelineEl = root.createDiv({ cls: 'ir-queue-timeline-host' });
+    this._renderRows(root, 'open');
+    this._refreshTimeline(true);
   }
 
-  async _renderRows(root) {
-    const generation = ++this.rowsGeneration;
-    let sectionsEl = root.querySelector('.ir-queue-sections');
-    if (!sectionsEl) sectionsEl = root.createDiv({ cls: 'ir-queue-sections' });
-    sectionsEl.empty();
-
+  async _buildQueueModel() {
     const today = todayDate();
-
-    // 1. Today's Session — snapshot order (matches dashboard).
     let session = await this.plugin.readSessionSnapshot();
     if (!session) {
-      // No fresh snapshot — derive but DO NOT persist.
-      // Persisting would race with the dashboard's own snapshot logic.
       const pool = await this.plugin.buildDuePool({ skipCurrent: false });
       session = this.plugin.buildInterleavedQueue(pool, today);
     }
-    if (generation !== this.rowsGeneration || !sectionsEl.isConnected) return;
 
-    // 2. Build supplementary groups from a single full-file scan for items NOT in session.
-    // Only exclude files that are themselves session entries (topics/file-cards) from
-    // the supplementary groups — not parents merely hosting a session inline card.
-    const sessionPaths = new Set(session.filter(s => !s.fm?.inline_parent).map(s => s.tfile.path));
+    const sessionPaths = new Set(session.filter(row => !row.fm?.inline_parent).map(row => row.tfile.path));
     const groups = { overdue: [], newItems: [], active: [] };
-    for (const file of getAllIRFiles(this.plugin.app, this.plugin.settings)) {
+    for (const { tfile: file, fm } of this.plugin.getIRRows()) {
       if (sessionPaths.has(file.path)) continue;
-      const cache = this.plugin.app.metadataCache.getFileCache(file);
-      const fm = cache?.frontmatter;
       if (!isQueueVisibleIR(fm) || fm.type === 'card') continue;
-      if (this._filterMiss(cache, file)) continue;
       const row = { tfile: file, file, fm };
       if (fm.status === 'pending' || fm.status === 'inbox') groups.newItems.push(row);
       else if (!fm.next_review) groups.active.push(row);
       else if (isPastDue(fm, today, this.plugin.settings)) groups.overdue.push(row);
     }
 
-    // 3. Apply filter to session rows too; normalize so r.file is always populated.
-    const sessionFiltered = session.filter(r => {
-      const cache = this.plugin.app.metadataCache.getFileCache(r.tfile);
-      return !this._filterMiss(cache, r.tfile);
-    }).map(r => ({ ...r, file: r.tfile }));
-
-    // 4. Sort overdue/active/new by sort_key (existing logic).
     const sortKey = this.plugin.settings.queue.sort_key;
     const sortFn = (a, b) => {
       if (sortKey === 'priority') return (a.fm.priority ?? 50) - (b.fm.priority ?? 50);
@@ -1366,12 +1397,49 @@ class IRQueueView extends ItemView {
     groups.overdue.sort(sortFn);
     groups.newItems.sort(sortFn);
     groups.active.sort(sortFn);
+    return { date: todayDateString(this.plugin.settings), session, groups };
+  }
 
-    // 5. Render reading topics. Card queues belong to Spaced Repetition.
+  async _getQueueModel() {
+    const date = todayDateString(this.plugin.settings);
+    if (this.queueModel?.date === date) return this.queueModel;
+    if (this.queueModel && this.queueModel.date !== date) this._invalidateQueueModel();
+    if (this.queueModelPromise) return this.queueModelPromise;
+
+    const revision = this.queueRevision;
+    const promise = this._buildQueueModel();
+    this.queueModelPromise = promise;
+    try {
+      const model = await promise;
+      if (revision === this.queueRevision) this.queueModel = model;
+      return model;
+    } finally {
+      if (this.queueModelPromise === promise) this.queueModelPromise = null;
+    }
+  }
+
+  async _renderRows(root, reason = 'unknown') {
+    const started = window.performance?.now?.() ?? Date.now();
+    const generation = ++this.rowsGeneration;
+    const model = await this._getQueueModel();
+    const sectionsEl = this.sectionsEl || root.querySelector('.ir-queue-sections');
+    if (generation !== this.rowsGeneration || !sectionsEl.isConnected) return;
+    sectionsEl.empty();
+
+    const matchesFilter = (row) => {
+      const file = row.tfile || row.file;
+      return !this._filterMiss(this.plugin.app.metadataCache.getFileCache(file), file);
+    };
+    const sessionFiltered = model.session.filter(r => {
+      const cache = this.plugin.app.metadataCache.getFileCache(r.tfile);
+      return !this._filterMiss(cache, r.tfile);
+    }).map(r => ({ ...r, file: r.tfile }));
     this._renderSection(sectionsEl, "Today's Session", sessionFiltered);
-    this._renderSection(sectionsEl, 'Overdue (not in session)', groups.overdue);
-    this._renderSection(sectionsEl, 'New', groups.newItems);
-    this._renderSection(sectionsEl, 'Active (no due)', groups.active);
+    this._renderSection(sectionsEl, 'Overdue (not in session)', model.groups.overdue.filter(matchesFilter));
+    this._renderSection(sectionsEl, 'New', model.groups.newItems.filter(matchesFilter));
+    this._renderSection(sectionsEl, 'Active (no due)', model.groups.active.filter(matchesFilter));
+    const elapsed = (window.performance?.now?.() ?? Date.now()) - started;
+    this.plugin._dbg('queue render', { reason, elapsed_ms: Math.round(elapsed * 10) / 10 });
   }
 
   _filterMiss(cache, file) {
@@ -1386,26 +1454,45 @@ class IRQueueView extends ItemView {
     if (!rows.length) return;
     const sec = root.createDiv({ cls: 'ir-queue-section' });
     sec.createEl('div', { cls: 'ir-queue-section-title', text: `${title} (${rows.length})` });
-    for (const r of rows) {
+    const limit = this.sectionLimits.get(title) || 100;
+    for (const r of rows.slice(0, limit)) {
       const el = sec.createDiv({ cls: 'ir-queue-row' });
       el.createSpan({ text: ({ source: '📖', extract: '✂️', card: '🃏' })[r.fm.type] || '•' });
       el.createSpan({ cls: 'ir-queue-row-title', text: r.file.basename });
       el.createSpan({ cls: 'ir-queue-row-pri', text: `p${r.fm.priority ?? '?'}` });
       el.addEventListener('click', () => this._open(r));
     }
+    if (rows.length > limit) {
+      const more = sec.createEl('button', {
+        cls: 'ir-queue-show-more',
+        text: `Show ${Math.min(100, rows.length - limit)} more`,
+      });
+      more.addEventListener('click', () => {
+        this.sectionLimits.set(title, limit + 100);
+        this._renderRows(this.containerEl.children[1], 'show-more');
+      });
+    }
   }
 
   async _open(r) {
     if (r.fm.inline_parent) {
       await this.plugin._reviewInlineCard(r.fm.inline_parent, r.fm.id);
-      this._render();
+      this._invalidateQueueModel();
+      this._renderRows(this.containerEl.children[1], 'inline-review');
       return;
     }
     await this.plugin.openLearningItem({ ...r, tfile: r.file });
   }
 
-  _renderTimeline(root) {
-    const active = this.plugin.app.workspace.getActiveFile();
+  _refreshTimeline(force = false, file = this.plugin.app.workspace.getActiveFile()) {
+    const path = file?.path || null;
+    if (!force && path === this.activeTimelinePath) return;
+    this.activeTimelinePath = path;
+    if (this.timelineEl) this._renderTimeline(this.timelineEl, file);
+  }
+
+  _renderTimeline(root, active = this.plugin.app.workspace.getActiveFile()) {
+    root.empty();
     if (!active) return;
     const fm = this.plugin.app.metadataCache.getFileCache(active)?.frontmatter;
     if (!isActiveIR(fm)) return;
@@ -1429,7 +1516,7 @@ class IRQueueView extends ItemView {
       if (e.key === 'Enter' && input.value.trim()) {
         await this.plugin.addCheckpoint(input.value.trim());
         input.value = '';
-        this._render();
+        this._refreshTimeline(true);
       }
     });
   }
@@ -1680,7 +1767,10 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
     const sec = root.createDiv({ cls: 'ir-settings-section' });
     new Setting(sec).setName('Paths').setHeading();
     const s = this.plugin.settings.paths;
-    const save = () => this.plugin.saveSettings();
+    const save = () => {
+      this.plugin._invalidateIRCollection(true);
+      return this.plugin.saveSettings();
+    };
     const paths = [
       ['sources', 'Sources folder', 'Source notes and local video files.'],
       ['extracts', 'Extracts folder', 'Passages scheduled as separate reading topics.'],
@@ -1747,28 +1837,47 @@ class MainDashboardView extends ItemView {
     super(leaf);
     this.plugin = plugin;
     this.timer = null;
-    this.irViewSignatures = new Map();
+    this.collectionRevision = 0;
     this.renderGeneration = 0;
     this.scrollToStatsOnRender = false;
+    this.needsRender = false;
   }
   getViewType() { return MAIN_DASHBOARD_VIEW_TYPE; }
   getDisplayText() { return 'Learning dashboard'; }
   getIcon() { return 'layout-dashboard'; }
   async onOpen() {
-    this.irViewSignatures = captureIRViewSignatures(this.plugin.app, this.plugin.settings);
+    this.collectionRevision = this.plugin.irCollectionRevision;
     this.render();
     this.registerEvent(this.plugin.app.metadataCache.on('changed', (file) => {
-      if (!irViewMetadataChanged(this, file)) return;
-      if (this.timer) window.clearTimeout(this.timer);
-      this.timer = window.setTimeout(() => this.render(), 250);
+      if (this.collectionRevision === this.plugin.irCollectionRevision) return;
+      this.collectionRevision = this.plugin.irCollectionRevision;
+      this._requestRender();
     }));
     this.registerEvent(this.plugin.app.vault.on('modify', (file) => {
       if (getFm(this.plugin.app, file)?.type !== 'card') return;
-      if (this.timer) window.clearTimeout(this.timer);
-      this.timer = window.setTimeout(() => this.render(), 250);
+      this._requestRender();
+    }));
+    for (const event of ['create', 'delete', 'rename']) {
+      this.registerEvent(this.plugin.app.vault.on(event, () => {
+        this.collectionRevision = this.plugin.irCollectionRevision;
+        this._requestRender();
+      }));
+    }
+    this.registerEvent(this.plugin.app.workspace.on('active-leaf-change', () => {
+      if (this.needsRender && isViewVisible(this)) this._requestRender();
     }));
   }
   async onClose() { if (this.timer) window.clearTimeout(this.timer); }
+  _requestRender() {
+    if (this.plugin.collectionRenderDeferrals > 0) { this.needsRender = true; return; }
+    if (!isViewVisible(this)) { this.needsRender = true; return; }
+    this.needsRender = false;
+    if (this.timer) window.clearTimeout(this.timer);
+    this.timer = window.setTimeout(() => {
+      this.timer = null;
+      this.render();
+    }, 250);
+  }
   _metric(parent, value, label, tone = '') {
     const card = parent.createDiv({ cls: `ir-dashboard-metric ${tone}`.trim() });
     card.createDiv({ cls: 'ir-dashboard-metric-value', text: String(value) });
@@ -1808,12 +1917,12 @@ class MainDashboardView extends ItemView {
     }
   }
   async render() {
+    this.needsRender = false;
     const generation = ++this.renderGeneration;
     const root = this.containerEl.children[1];
     root.empty(); root.addClass('ir-dashboard-root');
-    const files = getAllIRFiles(this.plugin.app, this.plugin.settings);
     const today = todayDate();
-    const rows = files.map(tfile => ({ tfile, fm: getFm(this.plugin.app, tfile) })).filter(row => row.fm);
+    const rows = this.plugin.getIRRows();
     const topics = rows.filter(row => ['source', 'extract'].includes(row.fm.type));
     const active = topics.filter(row => isActiveIR(row.fm));
     const cards = rows.filter(row => row.fm.type === 'card');
@@ -1998,7 +2107,8 @@ class KnowledgeTreeView extends ItemView {
     this._match = null;
     this.index = null;
     this.refreshTimer = null;
-    this.irViewSignatures = new Map();
+    this.collectionRevision = 0;
+    this.needsRender = false;
   }
 
   getViewType() { return this.mode === 'sidebar' ? KNOWLEDGE_TREE_SIDEBAR_TYPE : KNOWLEDGE_TREE_VIEW_TYPE; }
@@ -2006,16 +2116,36 @@ class KnowledgeTreeView extends ItemView {
   getIcon() { return 'folder-tree'; }
 
   async onOpen() {
-    this.irViewSignatures = captureIRViewSignatures(this.plugin.app, this.plugin.settings);
+    this.collectionRevision = this.plugin.irCollectionRevision;
     this._render();
     this.registerEvent(this.plugin.app.metadataCache.on('changed', (file) => {
-      if (!irViewMetadataChanged(this, file)) return;
-      if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
-      this.refreshTimer = window.setTimeout(() => this._renderBody(), 300);
+      if (this.collectionRevision === this.plugin.irCollectionRevision) return;
+      this.collectionRevision = this.plugin.irCollectionRevision;
+      this._requestBodyRender();
+    }));
+    for (const event of ['create', 'delete', 'rename']) {
+      this.registerEvent(this.plugin.app.vault.on(event, () => {
+        this.collectionRevision = this.plugin.irCollectionRevision;
+        this._requestBodyRender();
+      }));
+    }
+    this.registerEvent(this.plugin.app.workspace.on('active-leaf-change', () => {
+      if (this.needsRender && isViewVisible(this)) this._requestBodyRender();
     }));
   }
   async onClose() {
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+  }
+
+  _requestBodyRender() {
+    if (this.plugin.collectionRenderDeferrals > 0) { this.needsRender = true; return; }
+    if (!isViewVisible(this)) { this.needsRender = true; return; }
+    this.needsRender = false;
+    if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = window.setTimeout(() => {
+      this.refreshTimer = null;
+      this._renderBody();
+    }, 300);
   }
 
   // Full render: rebuilds toolbar + body. Used on open and cross-view refresh.
@@ -2061,6 +2191,7 @@ class KnowledgeTreeView extends ItemView {
   }
 
   _renderBody() {
+    this.needsRender = false;
     if (!this._bodyEl) { this._render(); return; }
     this._bodyEl.empty();
     this.index = this.plugin.buildTreeIndex();
@@ -2256,6 +2387,41 @@ class IncrementalReadingPlugin extends Plugin {
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       this.settings[key] = Object.assign({}, DEFAULT_SETTINGS[key], this.settings[key] || {});
     }
+    this.cardDueCache = new Map();
+    this.irFilesCache = null;
+    this.irRowsCache = null;
+    this.irMetadataSignatures = new Map();
+    this.irCollectionRevision = 0;
+    this.collectionRenderDeferrals = 0;
+    this.treeIndexCache = null;
+    this.duePoolCache = null;
+    this.registerEvent(this.app.metadataCache.on('changed', file => {
+      if (!isPathInIRCollection(this.settings, file.path)) return;
+      const next = irViewSignature(this.app, file);
+      const previous = this.irMetadataSignatures.get(file.path) ?? null;
+      if (next === previous) return;
+      if (next === null) this.irMetadataSignatures.delete(file.path);
+      else this.irMetadataSignatures.set(file.path, next);
+      this.irRowsCache = null;
+      this.treeIndexCache = null;
+      this.duePoolCache = null;
+      this.irCollectionRevision++;
+    }));
+    this.registerEvent(this.app.vault.on('modify', file => {
+      if (!isPathInIRCollection(this.settings, file.path)) return;
+      this.cardDueCache.delete(file.path);
+      if (getFm(this.app, file)?.type === 'card') this.duePoolCache = null;
+    }));
+    this.registerEvent(this.app.vault.on('create', () => this._invalidateIRCollection(true)));
+    this.registerEvent(this.app.vault.on('delete', file => {
+      this.cardDueCache.delete(file.path);
+      this._invalidateIRCollection(true);
+    }));
+    this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
+      this.cardDueCache.delete(oldPath);
+      this.cardDueCache.delete(file.path);
+      this._invalidateIRCollection(true);
+    }));
     await this.saveData(this.settings);
     this.addSettingTab(new IncrementalReadingSettingTab(this.app, this));
     this.registerView(IR_QUEUE_VIEW_TYPE, leaf => new IRQueueView(leaf, this));
@@ -2363,6 +2529,7 @@ class IncrementalReadingPlugin extends Plugin {
     cmd('toggle-read-point',  'Toggle read-point',               () => this.toggleReadPoint());
     cmd('jump-to-read-point', 'Jump to read-point',              () => this.jumpToReadPoint());
     cmd('stats',              'Stats',                           () => this.stats());
+    cmd('performance-diagnostics', 'Performance diagnostics',   () => this.performanceDiagnostics());
 
     // Splits
     cmd('split-article',      'Split article on H2 headings',    () => this.splitArticle());
@@ -2584,7 +2751,7 @@ class IncrementalReadingPlugin extends Plugin {
 
   async migrateDateFormat(fromFormat, toFormat) {
     const keys = ['next_review', 'last_reviewed', 'date_added', 'date_dismissed', 'today_session_date'];
-    const files = new Map(getAllIRFiles(this.app, this.settings).map(file => [file.path, file]));
+    const files = new Map(this.getIRFiles().map(file => [file.path, file]));
     const dashboard = this.app.vault.getAbstractFileByPath(this.dashboardPath());
     if (dashboard instanceof TFile) files.set(dashboard.path, dashboard);
     let changed = 0;
@@ -2626,26 +2793,84 @@ class IncrementalReadingPlugin extends Plugin {
     if (this.settings?.misc?.debug) console.log('[Incremental Reading Toolkit]', ...args);
   }
 
+  _invalidateIRCollection(filesChanged = false) {
+    if (filesChanged) {
+      this.irFilesCache = null;
+      this.irMetadataSignatures.clear();
+    }
+    this.irRowsCache = null;
+    this.treeIndexCache = null;
+    this.duePoolCache = null;
+    this.irCollectionRevision++;
+  }
+
+  getIRFiles() {
+    if (!this.irFilesCache) this.irFilesCache = getAllIRFiles(this.app, this.settings);
+    return this.irFilesCache;
+  }
+
+  getIRRows() {
+    if (!this.irRowsCache) {
+      this.irRowsCache = this.getIRFiles().map(tfile => ({
+        tfile,
+        file: tfile,
+        fm: getFm(this.app, tfile),
+      })).filter(row => row.fm);
+      for (const row of this.irRowsCache) {
+        this.irMetadataSignatures.set(row.tfile.path, irViewSignature(this.app, row.tfile));
+      }
+    }
+    return this.irRowsCache;
+  }
+
+  async _cardIsDue(file, today) {
+    const dateKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const key = `${dateKey}:${file.stat?.mtime || 0}:${file.stat?.size || 0}`;
+    const cached = this.cardDueCache.get(file.path);
+    if (cached?.key === key) return cached.promise;
+
+    const promise = this.app.vault.cachedRead(file)
+      .then(content => spacedRepetitionCardIsDue(content, today));
+    this.cardDueCache.set(file.path, { key, promise });
+    try {
+      return await promise;
+    } catch (error) {
+      if (this.cardDueCache.get(file.path)?.promise === promise) this.cardDueCache.delete(file.path);
+      throw error;
+    }
+  }
+
   // ---- Next / Random -----------------------------------------------------
 
   async buildDuePool({ skipCurrent = true } = {}) {
     const today = todayDate();
     const active = this.app.workspace.getActiveFile();
-    const candidates = [];
-    for (const f of getAllIRFiles(this.app, this.settings)) {
-      if (skipCurrent && active && f.path === active.path) continue;
-      const fm = getFm(this.app, f);
-      if (!isActiveIR(fm)) continue;
-      if (fm.type === 'card') {
-        if (this.settings.queue.mix_cards === false || !this.isSpacedRepetitionReady()) continue;
-      } else if (!isDue(fm, today, this.settings)) continue;
-      candidates.push({ tfile: f, fm });
+    const dateKey = todayDateString(this.settings);
+    const mixCards = this.settings.queue.mix_cards !== false;
+    const srReady = mixCards && this.isSpacedRepetitionReady();
+    const key = `${dateKey}:${this.irCollectionRevision}:${mixCards}:${srReady}`;
+    if (this.duePoolCache?.key !== key) {
+      const promise = (async () => {
+        const candidates = [];
+        for (const { tfile: f, fm } of this.getIRRows()) {
+          if (!isActiveIR(fm)) continue;
+          if (fm.type === 'card') {
+            if (!srReady) continue;
+          } else if (!isDue(fm, today, this.settings)) continue;
+          candidates.push({ tfile: f, fm });
+        }
+        return filterAsyncConcurrent(candidates, async item => {
+          if (item.fm.type !== 'card') return true;
+          return this._cardIsDue(item.tfile, today);
+        });
+      })();
+      this.duePoolCache = { key, promise };
+      promise.catch(() => {
+        if (this.duePoolCache?.promise === promise) this.duePoolCache = null;
+      });
     }
-    return filterAsyncConcurrent(candidates, async item => {
-      if (item.fm.type !== 'card') return true;
-      const content = await this.app.vault.cachedRead(item.tfile);
-      return spacedRepetitionCardIsDue(content, today);
-    });
+    const pool = await this.duePoolCache.promise;
+    return skipCurrent && active ? pool.filter(item => item.tfile.path !== active.path) : pool.slice();
   }
 
   // Read the dashboard's session snapshot (path list persisted as
@@ -2681,8 +2906,7 @@ class IncrementalReadingPlugin extends Plugin {
     }
     return filterAsyncConcurrent(candidates, async item => {
       if (item.fm.type !== 'card') return true;
-      const content = await this.app.vault.cachedRead(item.tfile);
-      return spacedRepetitionCardIsDue(content, today);
+      return this._cardIsDue(item.tfile, today);
     });
   }
 
@@ -2709,16 +2933,46 @@ class IncrementalReadingPlugin extends Plugin {
     return topicCore.interleaveLearningItems(pool, item => urgency(item.fm, today, this.settings));
   }
 
-  async consumeSessionItem(path) {
+  async consumeSessionItem(path, { background = false } = {}) {
+    const writes = [];
     if (this.settings.session?.date === todayDateString(this.settings)) {
       this.settings.session.paths = (this.settings.session.paths || []).filter(value => value !== path);
-      await this.saveSettings();
+      writes.push(this.saveSettings());
     }
     const dash = this.app.vault.getAbstractFileByPath(this.dashboardPath());
-    if (!dash) return;
-    await this.app.fileManager.processFrontMatter(dash, fm => {
-      if (Array.isArray(fm.today_session_paths)) fm.today_session_paths = fm.today_session_paths.filter(value => value !== path);
-    });
+    if (dash) {
+      writes.push(this.app.fileManager.processFrontMatter(dash, fm => {
+        if (Array.isArray(fm.today_session_paths)) fm.today_session_paths = fm.today_session_paths.filter(value => value !== path);
+      }));
+    }
+    const persistence = Promise.all(writes);
+    if (!background) return persistence;
+    persistence.catch(error => console.error('[IR] background session persistence failed', error));
+  }
+
+  async _withDeferredCollectionRenders(callback) {
+    this.collectionRenderDeferrals++;
+    try {
+      return await callback();
+    } finally {
+      this.collectionRenderDeferrals--;
+      if (this.collectionRenderDeferrals === 0) this._flushDeferredCollectionRenders();
+    }
+  }
+
+  _flushDeferredCollectionRenders() {
+    for (const leaf of this.app.workspace.getLeavesOfType(IR_QUEUE_VIEW_TYPE)) {
+      const view = leaf.view;
+      if (view?.needsRowsRender) view._scheduleRowsRender('grade-complete');
+    }
+    for (const leaf of this.app.workspace.getLeavesOfType(MAIN_DASHBOARD_VIEW_TYPE)) {
+      if (leaf.view?.needsRender) leaf.view._requestRender();
+    }
+    for (const type of [KNOWLEDGE_TREE_VIEW_TYPE, KNOWLEDGE_TREE_SIDEBAR_TYPE]) {
+      for (const leaf of this.app.workspace.getLeavesOfType(type)) {
+        if (leaf.view?.needsRender) leaf.view._requestBodyRender();
+      }
+    }
   }
 
   async openLearningItem(item) {
@@ -2761,17 +3015,22 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async gradeAndAdvance() {
-    const active = this.app.workspace.getActiveFile();
-    if (getFm(this.app, active)?.type === 'card') {
-      // Spaced Repetition has already graded the card. Mark this card row as
-      // consumed only now (not when it opens, since the review may be cancelled)
-      // and continue the mixed stream instead of reopening the same review UI.
-      if (active) await this.consumeSessionItem(active.path);
-      await this.nextElement();
-      return;
-    }
-    const graded = await this.endSession();
-    if (graded) await this.nextElement();
+    return this._withDeferredCollectionRenders(async () => {
+      const active = this.app.workspace.getActiveFile();
+      if (getFm(this.app, active)?.type === 'card') {
+        // Spaced Repetition has already graded the card. Mark this card row as
+        // consumed only now (not when it opens, since the review may be cancelled)
+        // and continue the mixed stream instead of reopening the same review UI.
+        if (active) this.consumeSessionItem(active.path, { background: true });
+        await this.nextElement();
+        return;
+      }
+      const graded = await this.endSession();
+      if (graded) {
+        if (active) this.consumeSessionItem(active.path, { background: true });
+        await this.nextElement();
+      }
+    });
   }
 
   // ---- End Session (A-Factor topics; cards delegate to Spaced Repetition) -
@@ -2897,21 +3156,6 @@ class IncrementalReadingPlugin extends Plugin {
 
     const nextReview = futureDateString(interval, this.settings);
 
-    await this.app.fileManager.processFrontMatter(file, (fmw) => {
-      fmw.interval = interval;
-      fmw.review_count = reviewCount;
-      fmw.next_review = nextReview;
-      fmw.last_reviewed = today;
-      fmw.a_factor = round4(aFactor);
-      if (newReadPoint !== undefined && newReadPoint !== null) fmw.read_point = newReadPoint;
-      if (newReadPointSeconds !== undefined && newReadPointSeconds !== null) fmw.read_point_seconds = newReadPointSeconds;
-      if (newReadPointLine > 0) fmw.read_point_line = newReadPointLine;
-      if (fmw.status === 'inbox' || fmw.status === 'pending') fmw.status = 'active';
-      for (const k of ['stability', 'difficulty', 'last_grade', 'last_retrievability', 'ease']) {
-        if (fmw[k] !== undefined) delete fmw[k];
-      }
-    });
-
     let markedDone = false;
     const chapterEnd = Number(fm.page_end) || null;
     const bookEnd = Number(fm.total_pages) || null;
@@ -2921,12 +3165,24 @@ class IncrementalReadingPlugin extends Plugin {
     const reachedVideo = isVideo && vidTarget && newReadPointSeconds != null && newReadPointSeconds >= vidTarget;
     if (reachedPages || reachedVideo) {
       const unit = reachedVideo ? 'video' : (chapterEnd ? 'chapter' : 'source');
-      const done = await confirmDialog(this.app, `Mark ${unit} as done?`);
-      if (done) {
-        await this.app.fileManager.processFrontMatter(file, (fmw) => { fmw.status = 'done'; });
-        markedDone = true;
-      }
+      markedDone = await confirmDialog(this.app, `Mark ${unit} as done?`);
     }
+
+    await this.app.fileManager.processFrontMatter(file, (fmw) => {
+      fmw.interval = interval;
+      fmw.review_count = reviewCount;
+      fmw.next_review = nextReview;
+      fmw.last_reviewed = today;
+      fmw.a_factor = round4(aFactor);
+      if (newReadPoint !== undefined && newReadPoint !== null) fmw.read_point = newReadPoint;
+      if (newReadPointSeconds !== undefined && newReadPointSeconds !== null) fmw.read_point_seconds = newReadPointSeconds;
+      if (newReadPointLine > 0) fmw.read_point_line = newReadPointLine;
+      if (markedDone) fmw.status = 'done';
+      else if (fmw.status === 'inbox' || fmw.status === 'pending') fmw.status = 'active';
+      for (const k of ['stability', 'difficulty', 'last_grade', 'last_retrievability', 'ease']) {
+        if (fmw[k] !== undefined) delete fmw[k];
+      }
+    });
 
     // Keep the historical review-log columns stable. A-Factor before/after are
     // captured in the final columns for dashboard and script compatibility.
@@ -2938,7 +3194,11 @@ class IncrementalReadingPlugin extends Plugin {
         return (lr && tdy) ? Math.max(0, Math.round((tdy - lr) / 86400000)) : 0;
       })();
       const row = `| ${today} | [[${file.basename}]] | ${fm.type} | — | ${elapsedDays} |  |  |  | ${round4(priorAFactor)} | ${round4(aFactor)} |\n`;
-      await this.app.vault.append(logFile, row);
+      this.app.vault.append(logFile, row).then(() => {
+        for (const leaf of this.app.workspace.getLeavesOfType(MAIN_DASHBOARD_VIEW_TYPE)) {
+          leaf.view?._requestRender?.();
+        }
+      }).catch(error => console.error('[IR] background review-log append failed', error));
     }
 
     const typeLabel = fm.type === 'source' ? 'Source' : 'Extract';
@@ -3014,15 +3274,16 @@ class IncrementalReadingPlugin extends Plugin {
   // Build the tree index from every IR element. Duplicate basenames stay visible
   // as roots and cannot be used as parents until the user gives them unique names.
   buildTreeIndex() {
+    if (this.treeIndexCache?.revision === this.irCollectionRevision) return this.treeIndexCache.index;
     const pages = [];
-    for (const f of getAllIRFiles(this.app, this.settings)) {
-      const fm = getFm(this.app, f);
-      if (!fm) continue;
+    for (const { tfile: f, fm } of this.getIRRows()) {
       const t = fm.type;
       if (t !== 'category' && t !== 'source' && t !== 'extract' && t !== 'card') continue;
       pages.push({ path: f.path, basename: f.basename, fm, tfile: f });
     }
-    return treeCore.buildTreeIndex(pages);
+    const index = treeCore.buildTreeIndex(pages);
+    this.treeIndexCache = { revision: this.irCollectionRevision, index };
+    return index;
   }
 
   async createCategory(parentName = null) {
@@ -3372,7 +3633,7 @@ class IncrementalReadingPlugin extends Plugin {
 
     let cascaded = 0;
     if (cascade) {
-      const subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path);
+      const subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, { rows: this.getIRRows() });
       for (const p of subtree) {
         if (p.tfile.path === r.tfile.path) continue;
         if (p.fm.type === 'card') continue;
@@ -3405,7 +3666,10 @@ class IncrementalReadingPlugin extends Plugin {
     if (!filter) return;
 
     const today = todayDate();
-    let subset = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, { includeCards: false })
+    let subset = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, {
+      includeCards: false,
+      rows: this.getIRRows(),
+    })
       .filter(p => p.tfile.path !== r.tfile.path);
     if (filter === 'due') subset = subset.filter(p => isDue(p.fm, today, this.settings));
     subset = subset.filter(p => p.fm.status !== 'done' && p.fm.status !== 'container' && p.fm.status !== 'dismissed');
@@ -3438,8 +3702,7 @@ class IncrementalReadingPlugin extends Plugin {
     if (!choice) return;
     const today = todayDate();
     const overdue = [];
-    for (const f of getAllIRFiles(this.app, this.settings)) {
-      const fm = getFm(this.app, f);
+    for (const { tfile: f, fm } of this.getIRRows()) {
       if (!isActiveIR(fm) || fm.type === 'card') continue;
       if (!isPastDue(fm, today, this.settings)) continue;
       overdue.push({ tfile: f, fm });
@@ -3467,7 +3730,7 @@ class IncrementalReadingPlugin extends Plugin {
       'Postpone subtree by'
     );
     if (!choice) return;
-    const subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path);
+    const subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, { rows: this.getIRRows() });
     let postponed = 0;
     for (const p of subtree) {
       const fm = p.fm;
@@ -4165,7 +4428,7 @@ ${body}
     const editor = getEditorForFile(this.app, active);
     const cursor = editor?.getCursor?.();
     if (!editor || !cursor) { new Notice('No editor cursor.'); return; }
-    const content = await this.app.vault.read(active);
+    const content = editor.getValue();
     READ_POINT_RE.lastIndex = 0;
     const hasMarker = READ_POINT_RE.test(content);
 
@@ -4212,7 +4475,8 @@ ${body}
     if (fm.total_pages || fm.pdf_path || fm.pdf_vault_path || fm.sioyek_path) {
       new Notice('PDF — use Open PDF (Toolkit viewer).'); return;
     }
-    const content = await this.app.vault.read(active);
+    const openEditor = getEditorForFile(this.app, active);
+    const content = openEditor?.getValue?.() ?? await this.app.vault.cachedRead(active);
     const m = content.match(/(?:📍\s*)?<!--ir-readpoint-->/);
     if (!m) { new Notice('No 📍 read-point.'); return; }
     const before = content.slice(0, m.index);
@@ -4236,6 +4500,48 @@ ${body}
 
   async stats() {
     await this.openDashboard('stats');
+  }
+
+  async performanceDiagnostics() {
+    const now = () => window.performance?.now?.() ?? Date.now();
+    let started = now();
+    const files = getAllIRFiles(this.app, this.settings);
+    const scanMs = now() - started;
+
+    started = now();
+    const rows = files.map(tfile => ({ tfile, fm: getFm(this.app, tfile) })).filter(row => row.fm);
+    for (const row of rows) irViewSignature(this.app, row.tfile);
+    const metadataMs = now() - started;
+
+    started = now();
+    treeCore.buildTreeIndex(rows
+      .filter(row => ['category', 'source', 'extract', 'card'].includes(row.fm.type))
+      .map(row => ({ path: row.tfile.path, basename: row.tfile.basename, fm: row.fm, tfile: row.tfile })));
+    const treeMs = now() - started;
+
+    this.duePoolCache = null;
+    this.cardDueCache.clear();
+    started = now();
+    const due = await this.buildDuePool({ skipCurrent: false });
+    const dueMs = now() - started;
+    const cards = rows.filter(row => row.fm.type === 'card').length;
+    const result = {
+      files: files.length,
+      cards,
+      due: due.length,
+      folder_scan_ms: Math.round(scanMs * 10) / 10,
+      metadata_ms: Math.round(metadataMs * 10) / 10,
+      tree_index_ms: Math.round(treeMs * 10) / 10,
+      due_pool_ms: Math.round(dueMs * 10) / 10,
+    };
+    console.info('[Incremental Reading Toolkit] performance diagnostics', result);
+    new Notice([
+      `IR diagnostics · ${result.files} files (${result.cards} cards)`,
+      `Folder scan ${result.folder_scan_ms}ms · metadata ${result.metadata_ms}ms`,
+      `Tree index ${result.tree_index_ms}ms · due pool ${result.due_pool_ms}ms`,
+      'Full details were written to the developer console.',
+    ].join('\n'), 15000);
+    return result;
   }
 
   // ---- Splits ------------------------------------------------------------

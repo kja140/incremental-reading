@@ -48,7 +48,8 @@ test('asynchronous queue refreshes discard stale results', () => {
 });
 
 test('collection views ignore body-only metadata refreshes', () => {
-  assert.match(main, /if \(!irViewMetadataChanged\(this, file\)\) return;/);
+  assert.match(main, /if \(next === previous\) return;/);
+  assert.match(main, /this\.irMetadataSignatures\.set\(file\.path, next\)/);
   assert.match(main, /IR_VIEW_FRONTMATTER_FIELDS/);
 });
 
@@ -65,6 +66,42 @@ test('stats command opens the visual analytics dashboard', () => {
   assert.match(main, /_activityChart\(parent, days\)/);
   assert.match(main, /_distributionChart\(parent, rows\)/);
   assert.match(main, /Learning analytics/);
+});
+
+test('note navigation refreshes only the queue timeline', () => {
+  const queueOpen = main.slice(main.indexOf('class IRQueueView'), main.indexOf('//  Settings Tab'));
+  assert.match(queueOpen, /workspace\.on\('file-open', file => this\._refreshTimeline\(false, file\)\)/);
+  assert.match(queueOpen, /workspace\.on\('active-leaf-change', \(\) => this\._refreshTimeline\(\)\)/);
+  assert.doesNotMatch(queueOpen, /active-leaf-change', \(\) => this\._render\(\)/);
+});
+
+test('queue rows and card due checks are cached with precise invalidation', () => {
+  assert.match(main, /async _getQueueModel\(\)/);
+  assert.match(main, /this\.queueModel\?\.date === date/);
+  assert.match(main, /const key = `\$\{dateKey\}:\$\{file\.stat\?\.mtime \|\| 0\}:\$\{file\.stat\?\.size \|\| 0\}`/);
+  assert.match(main, /vault\.on\('modify', file => \{[\s\S]*?this\.cardDueCache\.delete\(file\.path\)/);
+  assert.doesNotMatch(main, /setInterval\(\(\) => this\._render\(\), 30000\)/);
+});
+
+test('hidden collection views defer metadata renders', () => {
+  assert.match(main, /function isViewVisible\(view\)/);
+  assert.match(main, /if \(!isViewVisible\(this\)\) \{ this\.needsRender = true; return; \}/);
+});
+
+test('collection-heavy features share one cached file and metadata index', () => {
+  assert.match(main, /getIRFiles\(\) \{/);
+  assert.match(main, /getIRRows\(\) \{/);
+  assert.match(main, /if \(!this\.irFilesCache\)/);
+  assert.match(main, /if \(!this\.irRowsCache\)/);
+  assert.match(main, /for \(const \{ tfile: file, fm \} of this\.plugin\.getIRRows\(\)\)/);
+  assert.match(main, /for \(const \{ tfile: f, fm \} of this\.getIRRows\(\)\)/);
+});
+
+test('large queue sections render incrementally and diagnostics are available', () => {
+  assert.match(main, /rows\.slice\(0, limit\)/);
+  assert.match(main, /Show \$\{Math\.min\(100, rows\.length - limit\)\} more/);
+  assert.match(main, /cmd\('performance-diagnostics', 'Performance diagnostics'/);
+  assert.match(main, /async performanceDiagnostics\(\)/);
 });
 
 test('page, priority, and boost prompts reject partially numeric input', () => {
