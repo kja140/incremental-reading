@@ -79,10 +79,10 @@ Card creation writes Spaced Repetition-compatible Markdown. Topic scheduling rem
 ## Five-minute workflow
 
 1. **Capture a source.** Open an article note and run **Import clipping (active note)**, or run **New source**.
-2. **Start reading.** Run **Next element** and read a useful portion.
+2. **Build the queue.** Run **Build today's session queue** once, then run **Next element**.
 3. **Keep the valuable parts.** Select important text and run **Extract selection**.
-4. **Schedule the return.** Leave the cursor where you stopped, then run **Grade and advance**.
-5. **Create recall material.** Run **Flashcard from clipboard**, then continue with **Next element** for a mixed session.
+4. **Schedule the return.** Leave the cursor where you stopped, then run **Grade current element**.
+5. **Create recall material.** Run **Flashcard from clipboard**. When **Next element** opens a card note, run **Review cards in current note**, answer it, then run **Grade current element** to finish that queue entry.
 
 For recommended keybindings and complete note, PDF, card, queue, and date workflows, open the [user guide](docs/USER-GUIDE.md). You can also run **Open user guide** inside Obsidian.
 
@@ -110,9 +110,10 @@ For recommended keybindings and complete note, PDF, card, queue, and date workfl
 
 | Command | Purpose |
 |:--|:--|
-| **Next element** / **Random due element** | Continue the mixed queue or choose a random due item. |
-| **Grade and advance** | Grade the current topic, update its read point, and continue. |
-| **End session (grade current)** | Grade the current topic without opening another. |
+| **Build today's session queue** | Explicitly calculate and save today's scheduled queue. |
+| **Next element** | Open the following saved queue path without recalculating or refreshing collection views. |
+| **Random due element** | Calculate due work and choose a random item. |
+| **Grade current element** | Grade and schedule the current topic without navigating; finish an already-reviewed card. |
 | **Review cards** / **Review cards in current note** | Open the corresponding Spaced Repetition review interface. |
 | **Done** / **Dismiss** | Complete or remove a topic from the active queue. |
 | **Postpone** / **Schedule (manual date)** | Move the next review automatically or to a chosen date. |

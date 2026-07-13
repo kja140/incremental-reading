@@ -1,5 +1,27 @@
 # Incremental Reading Toolkit changelog
 
+## 1.1.6 — 2026-07-13
+
+### Changed
+- Split **Grade and advance** into independent **Grade current element** and **Next element** commands.
+- **Next element** now only opens the following path in the saved session queue. Queue calculation is
+  handled explicitly by **Build today's session queue**, and direct navigation suppresses collection-view
+  refreshes.
+- Single-note Spaced Repetition reviews now close their review tab or modal when grading finishes and
+  the dependency returns to its deck menu. Active multi-card reviews remain open.
+
+### Fixed
+- Spaced Repetition answer writes now invalidate cached due state without rebuilding the Reading Queue
+  or analytics dashboard during grading. Hidden queue tabs also defer row rendering until visible.
+- Collection create, delete, rename, and card-modify listeners now ignore files outside configured
+  Toolkit folders.
+- Starting a mixed session opens the first saved item even when that note was already active.
+- Card queue entries can only be finished after a verified Spaced Repetition scheduling update, and
+  completed reviews outside configured Toolkit folders can still close correctly.
+- Building a session is the explicit refresh boundary for views left stale by lightweight grading.
+- Overlapping **Next element** calls keep navigation refresh suppression active until every open finishes.
+- Updated the documentation website to match the separate build, grade, and navigation commands.
+
 ## 1.1.5 — 2026-07-13
 
 ### Fixed

@@ -252,6 +252,7 @@ const DASHBOARD_PATH = `${ROOT}/Incremental-Reading-Dashboard.md`;
 const SPACED_REPETITION_PLUGIN_ID = 'obsidian-spaced-repetition';
 const SPACED_REPETITION_REVIEW_COMMAND = `${SPACED_REPETITION_PLUGIN_ID}:srs-review-flashcards`;
 const SPACED_REPETITION_NOTE_COMMAND = `${SPACED_REPETITION_PLUGIN_ID}:srs-review-flashcards-in-note`;
+const SPACED_REPETITION_TAB_VIEW = 'spaced-repetition-tab-view';
 
 const READ_POINT_MARKER = '📍<!--ir-readpoint-->';
 const READ_POINT_RE = /(?:📍\s*)?<!--ir-readpoint-->/g;
@@ -406,6 +407,18 @@ function spacedRepetitionCardIsDue(content, today) {
   if (!dueDates.length) return true; // New, unscheduled card.
   const todayString = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   return dueDates.some(date => date <= todayString);
+}
+
+function spacedRepetitionScheduleSignature(content) {
+  return [...String(content || '').matchAll(/<!--SR:!?[^>]*-->/g)]
+    .map(match => match[0])
+    .join('\n');
+}
+
+function savedQueueCandidates(paths, activePath, fromStart = false) {
+  const queue = Array.isArray(paths) ? paths : [];
+  const currentIndex = activePath ? queue.indexOf(activePath) : -1;
+  return !fromStart && currentIndex >= 0 ? queue.slice(currentIndex + 1) : queue.slice();
 }
 
 // ============================================================================
@@ -1284,25 +1297,39 @@ class IRQueueView extends ItemView {
       this.collectionRevision = this.plugin.irCollectionRevision;
       this._invalidateQueueModel();
       this._scheduleRowsRender('metadata');
-      if (file.path === this.plugin.app.workspace.getActiveFile()?.path) this._refreshTimeline(true);
+      if (!this.plugin.directQueueNavigation
+          && file.path === this.plugin.app.workspace.getActiveFile()?.path) this._refreshTimeline(true);
     }));
     // Spaced Repetition stores scheduling in an HTML comment in the card body,
     // so card-body writes are the one non-frontmatter edit that affects queues.
     this.registerEvent(this.plugin.app.vault.on('modify', (file) => {
+      if (!isPathInIRCollection(this.plugin.settings, file?.path)) return;
       if (getFm(this.plugin.app, file)?.type !== 'card') return;
       this._invalidateQueueModel();
-      this._scheduleRowsRender('card-modify');
+      // Spaced Repetition can write several times while accepting an answer.
+      // Keep the model invalid but leave rendering to an explicit refresh.
+      this.needsRowsRender = true;
     }));
     for (const event of ['create', 'delete', 'rename']) {
-      this.registerEvent(this.plugin.app.vault.on(event, () => {
+      this.registerEvent(this.plugin.app.vault.on(event, (file, oldPath) => {
+        const relevant = event === 'rename'
+          ? isPathInIRCollection(this.plugin.settings, file?.path)
+            || isPathInIRCollection(this.plugin.settings, oldPath)
+          : isPathInIRCollection(this.plugin.settings, file?.path);
+        if (!relevant) return;
         this._invalidateQueueModel();
         this._scheduleRowsRender(`vault-${event}`);
       }));
     }
     // Navigation changes only the active note's timeline. Queue rows are
     // independent of the active file and must not be rebuilt on every click.
-    this.registerEvent(this.plugin.app.workspace.on('file-open', file => this._refreshTimeline(false, file)));
-    this.registerEvent(this.plugin.app.workspace.on('active-leaf-change', () => this._refreshTimeline()));
+    this.registerEvent(this.plugin.app.workspace.on('file-open', file => {
+      if (!this.plugin.directQueueNavigation) this._refreshTimeline(false, file);
+    }));
+    this.registerEvent(this.plugin.app.workspace.on('active-leaf-change', () => {
+      if (this.needsRowsRender && isViewVisible(this)) this._scheduleRowsRender('visible');
+      if (!this.plugin.directQueueNavigation) this._refreshTimeline();
+    }));
     this._scheduleDateRefresh();
   }
 
@@ -1318,7 +1345,12 @@ class IRQueueView extends ItemView {
   }
 
   _scheduleRowsRender(reason) {
+    if (this.plugin.directQueueNavigation) return;
     if (this.plugin.collectionRenderDeferrals > 0) {
+      this.needsRowsRender = true;
+      return;
+    }
+    if (!isViewVisible(this)) {
       this.needsRowsRender = true;
       return;
     }
@@ -1536,9 +1568,9 @@ class UserGuideModal extends Modal {
     const quick = root.createEl('ol');
     for (const text of [
       'Open an article note and run Import clipping, or create a source with New source.',
-      'Run Next element and read one useful portion.',
+      'Run Build today\'s session queue once, then use Next element to move through it.',
       'Select important text and run Extract selection.',
-      'Leave the cursor where you stopped, then run Grade and advance.',
+      'Leave the cursor where you stopped, then run Grade current element.',
       'Create recall material with Flashcard from clipboard.',
       'Study cards with Review cards (Spaced Repetition).',
     ]) quick.createEl('li', { text });
@@ -1552,7 +1584,7 @@ class UserGuideModal extends Modal {
     const body = table.createEl('tbody');
     for (const [command, hotkey] of [
       ['Next element', 'Cmd/Ctrl+Shift+J'],
-      ['Grade and advance', 'Cmd/Ctrl+Shift+Enter'],
+      ['Grade current element', 'Cmd/Ctrl+Shift+Enter'],
       ['Extract selection', 'Cmd/Ctrl+Shift+E'],
       ['Extract from clipboard', 'Cmd/Ctrl+Alt+E'],
       ['Flashcard from clipboard', 'Cmd/Ctrl+Shift+F'],
@@ -1567,7 +1599,7 @@ class UserGuideModal extends Modal {
     root.createEl('h3', { text: 'Daily reading loop' });
     const daily = root.createEl('ul');
     for (const text of [
-      'Next element opens the highest-urgency source or extract.',
+      'Build today\'s session queue performs scheduling work; Next element only opens the following saved path.',
       'Extracts remain reading topics; cards are reviewed in Spaced Repetition.',
       'Moving the Markdown read-point or advancing a page/timestamp counts as progress.',
       'Use Mercy to spread overdue work and Postpone subtree to move related material together.',
@@ -1854,11 +1886,19 @@ class MainDashboardView extends ItemView {
       this._requestRender();
     }));
     this.registerEvent(this.plugin.app.vault.on('modify', (file) => {
+      if (!isPathInIRCollection(this.plugin.settings, file?.path)) return;
       if (getFm(this.plugin.app, file)?.type !== 'card') return;
-      this._requestRender();
+      // Card answers change due state, but rebuilding analytics while the
+      // review UI is grading makes the dependency feel frozen.
+      this.needsRender = true;
     }));
     for (const event of ['create', 'delete', 'rename']) {
-      this.registerEvent(this.plugin.app.vault.on(event, () => {
+      this.registerEvent(this.plugin.app.vault.on(event, (file, oldPath) => {
+        const relevant = event === 'rename'
+          ? isPathInIRCollection(this.plugin.settings, file?.path)
+            || isPathInIRCollection(this.plugin.settings, oldPath)
+          : isPathInIRCollection(this.plugin.settings, file?.path);
+        if (!relevant) return;
         this.collectionRevision = this.plugin.irCollectionRevision;
         this._requestRender();
       }));
@@ -1869,6 +1909,7 @@ class MainDashboardView extends ItemView {
   }
   async onClose() { if (this.timer) window.clearTimeout(this.timer); }
   _requestRender() {
+    if (this.plugin.directQueueNavigation) return;
     if (this.plugin.collectionRenderDeferrals > 0) { this.needsRender = true; return; }
     if (!isViewVisible(this)) { this.needsRender = true; return; }
     this.needsRender = false;
@@ -1991,7 +2032,7 @@ class MainDashboardView extends ItemView {
     title.createEl('p', { text: `${today.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} · mixed topics and cards` });
     const actions = head.createDiv({ cls: 'ir-dashboard-actions' });
     for (const [label, action, cta] of [
-      ['Start mixed session', () => this.plugin.nextElement(), true],
+      ['Start mixed session', () => this.plugin.buildSessionQueue({ openFirst: true }), true],
       ['Review cards', () => this.plugin.reviewCards(), false],
       ['Knowledge tree', () => this.plugin._activateKnowledgeTree(), false],
     ]) {
@@ -2124,7 +2165,12 @@ class KnowledgeTreeView extends ItemView {
       this._requestBodyRender();
     }));
     for (const event of ['create', 'delete', 'rename']) {
-      this.registerEvent(this.plugin.app.vault.on(event, () => {
+      this.registerEvent(this.plugin.app.vault.on(event, (file, oldPath) => {
+        const relevant = event === 'rename'
+          ? isPathInIRCollection(this.plugin.settings, file?.path)
+            || isPathInIRCollection(this.plugin.settings, oldPath)
+          : isPathInIRCollection(this.plugin.settings, file?.path);
+        if (!relevant) return;
         this.collectionRevision = this.plugin.irCollectionRevision;
         this._requestBodyRender();
       }));
@@ -2138,6 +2184,7 @@ class KnowledgeTreeView extends ItemView {
   }
 
   _requestBodyRender() {
+    if (this.plugin.directQueueNavigation) return;
     if (this.plugin.collectionRenderDeferrals > 0) { this.needsRender = true; return; }
     if (!isViewVisible(this)) { this.needsRender = true; return; }
     this.needsRender = false;
@@ -2393,6 +2440,12 @@ class IncrementalReadingPlugin extends Plugin {
     this.irMetadataSignatures = new Map();
     this.irCollectionRevision = 0;
     this.collectionRenderDeferrals = 0;
+    this.directQueueNavigation = false;
+    this.directQueueNavigationDepth = 0;
+    this.pendingSpacedRepetitionReview = null;
+    this.completedSpacedRepetitionReviews = new Map();
+    this.spacedRepetitionCloseGeneration = 0;
+    this.spacedRepetitionCloseAttempt = 0;
     this.treeIndexCache = null;
     this.duePoolCache = null;
     this.registerEvent(this.app.metadataCache.on('changed', file => {
@@ -2408,19 +2461,32 @@ class IncrementalReadingPlugin extends Plugin {
       this.irCollectionRevision++;
     }));
     this.registerEvent(this.app.vault.on('modify', file => {
+      const pending = this.pendingSpacedRepetitionReview;
+      if (pending?.path === file.path && pending.expiresAt > Date.now()) {
+        this._confirmSpacedRepetitionReview(file, pending);
+      }
       if (!isPathInIRCollection(this.settings, file.path)) return;
       this.cardDueCache.delete(file.path);
       if (getFm(this.app, file)?.type === 'card') this.duePoolCache = null;
     }));
-    this.registerEvent(this.app.vault.on('create', () => this._invalidateIRCollection(true)));
+    this.registerEvent(this.app.vault.on('create', file => {
+      if (isPathInIRCollection(this.settings, file?.path)) this._invalidateIRCollection(true);
+    }));
     this.registerEvent(this.app.vault.on('delete', file => {
       this.cardDueCache.delete(file.path);
-      this._invalidateIRCollection(true);
+      this.completedSpacedRepetitionReviews.delete(file.path);
+      if (isPathInIRCollection(this.settings, file?.path)) this._invalidateIRCollection(true);
     }));
     this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
       this.cardDueCache.delete(oldPath);
       this.cardDueCache.delete(file.path);
-      this._invalidateIRCollection(true);
+      const completed = this.completedSpacedRepetitionReviews.get(oldPath);
+      if (completed) {
+        this.completedSpacedRepetitionReviews.delete(oldPath);
+        this.completedSpacedRepetitionReviews.set(file.path, completed);
+      }
+      if (isPathInIRCollection(this.settings, oldPath)
+          || isPathInIRCollection(this.settings, file?.path)) this._invalidateIRCollection(true);
     }));
     await this.saveData(this.settings);
     this.addSettingTab(new IncrementalReadingSettingTab(this.app, this));
@@ -2490,10 +2556,10 @@ class IncrementalReadingPlugin extends Plugin {
     });
 
     // Core review loop
+    cmd('build-session-queue','Build today\'s session queue',    () => this.buildSessionQueue());
     cmd('next-element',       'Next element',                    () => this.nextElement());
     cmd('random-due',         'Random due element',              () => this.randomDue());
-    cmd('grade-and-advance',  'Grade and advance',               () => this.gradeAndAdvance());
-    cmd('end-session',        'End session (grade current)',     () => this.endSession());
+    cmd('end-session',        'Grade current element',           () => this.gradeCurrent());
     cmd('done',               'Done',                            () => this.markDone());
     cmd('dismiss',            'Dismiss',                         () => this.dismiss());
     cmd('postpone',           'Postpone',                        () => this.postpone());
@@ -2692,10 +2758,72 @@ class IncrementalReadingPlugin extends Plugin {
     }
   }
 
-  reviewCardsInNote() {
+  async reviewCardsInNote() {
+    const active = this.app.workspace.getActiveFile();
+    const generation = ++this.spacedRepetitionCloseGeneration;
+    let baseline = '';
+    if (active) {
+      try {
+        baseline = spacedRepetitionScheduleSignature(await this.app.vault.cachedRead(active));
+      } catch (error) {
+        console.error('[IR] could not read Spaced Repetition baseline', error);
+      }
+    }
+    this.pendingSpacedRepetitionReview = active
+      ? { path: active.path, baseline, expiresAt: Date.now() + 10 * 60 * 1000, generation, verifying: false }
+      : null;
     if (!this.app.commands.executeCommandById(SPACED_REPETITION_NOTE_COMMAND)) {
+      this.pendingSpacedRepetitionReview = null;
       new Notice('Open a card note, then try again after Spaced Repetition has initialized.');
     }
+  }
+
+  async _confirmSpacedRepetitionReview(file, pending) {
+    if (pending.verifying) return;
+    pending.verifying = true;
+    try {
+      const content = await this.app.vault.cachedRead(file);
+      if (this.pendingSpacedRepetitionReview?.generation !== pending.generation) return;
+      const signature = spacedRepetitionScheduleSignature(content);
+      if (signature === pending.baseline) return;
+      pending.baseline = signature;
+      this.completedSpacedRepetitionReviews.set(file.path, {
+        completedAt: Date.now(),
+        generation: pending.generation,
+      });
+      this._closeSpacedRepetitionDeckMenuWhenReady(pending.generation);
+    } catch (error) {
+      console.error('[IR] could not verify Spaced Repetition review', error);
+    } finally {
+      if (this.pendingSpacedRepetitionReview?.generation === pending.generation) pending.verifying = false;
+    }
+  }
+
+  _closeSpacedRepetitionDeckMenuWhenReady(generation) {
+    const attempt = ++this.spacedRepetitionCloseAttempt;
+    const deadline = Date.now() + 5000;
+    const check = () => {
+      if (generation !== this.spacedRepetitionCloseGeneration
+          || attempt !== this.spacedRepetitionCloseAttempt) return;
+      const tabLeaves = this.app.workspace.getLeavesOfType(SPACED_REPETITION_TAB_VIEW);
+      const modal = activeDocument.querySelector('#sr-modal-view');
+      if (!tabLeaves.length && !modal) return;
+
+      const deckMenu = activeDocument.querySelector('.sr-deck-container:not(.sr-is-hidden)');
+      if (deckMenu) {
+        for (const leaf of tabLeaves) leaf.detach();
+        const closeButton = (modal?.closest('.modal-container') || modal)
+          ?.querySelector('.modal-close-button');
+        closeButton?.click();
+        if (this.pendingSpacedRepetitionReview?.generation === generation) {
+          this.pendingSpacedRepetitionReview = null;
+        }
+        this.spacedRepetitionCloseGeneration++;
+        return;
+      }
+      if (Date.now() < deadline) window.setTimeout(check, 50);
+    };
+    window.setTimeout(check, 50);
   }
 
   openUserGuide() {
@@ -2934,29 +3062,23 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async consumeSessionItem(path, { background = false } = {}) {
-    const writes = [];
-    if (this.settings.session?.date === todayDateString(this.settings)) {
-      this.settings.session.paths = (this.settings.session.paths || []).filter(value => value !== path);
-      writes.push(this.saveSettings());
-    }
-    const dash = this.app.vault.getAbstractFileByPath(this.dashboardPath());
-    if (dash) {
-      writes.push(this.app.fileManager.processFrontMatter(dash, fm => {
-        if (Array.isArray(fm.today_session_paths)) fm.today_session_paths = fm.today_session_paths.filter(value => value !== path);
-      }));
-    }
-    const persistence = Promise.all(writes);
+    if (this.settings.session?.date !== todayDateString(this.settings)) return;
+    this.settings.session.paths = (this.settings.session.paths || []).filter(value => value !== path);
+    // Settings are the authoritative live session. The dashboard snapshot is
+    // rebuilt only by Build today's session queue, avoiding a second vault
+    // write on the grading path.
+    const persistence = this.saveSettings();
     if (!background) return persistence;
     persistence.catch(error => console.error('[IR] background session persistence failed', error));
   }
 
-  async _withDeferredCollectionRenders(callback) {
+  async _withDeferredCollectionRenders(callback, { flush = true } = {}) {
     this.collectionRenderDeferrals++;
     try {
       return await callback();
     } finally {
       this.collectionRenderDeferrals--;
-      if (this.collectionRenderDeferrals === 0) this._flushDeferredCollectionRenders();
+      if (this.collectionRenderDeferrals === 0 && flush) this._flushDeferredCollectionRenders();
     }
   }
 
@@ -2975,6 +3097,27 @@ class IncrementalReadingPlugin extends Plugin {
     }
   }
 
+  _markCollectionViewsStale({ queue = true, dashboard = true, tree = false } = {}) {
+    if (queue) {
+      for (const leaf of this.app.workspace.getLeavesOfType(IR_QUEUE_VIEW_TYPE)) {
+        leaf.view?._invalidateQueueModel?.();
+        if (leaf.view) leaf.view.needsRowsRender = true;
+      }
+    }
+    if (dashboard) {
+      for (const leaf of this.app.workspace.getLeavesOfType(MAIN_DASHBOARD_VIEW_TYPE)) {
+        if (leaf.view) leaf.view.needsRender = true;
+      }
+    }
+    if (tree) {
+      for (const type of [KNOWLEDGE_TREE_VIEW_TYPE, KNOWLEDGE_TREE_SIDEBAR_TYPE]) {
+        for (const leaf of this.app.workspace.getLeavesOfType(type)) {
+          if (leaf.view) leaf.view.needsRender = true;
+        }
+      }
+    }
+  }
+
   async openLearningItem(item) {
     if (!item?.tfile) return;
     await this.app.workspace.getLeaf(false).openFile(item.tfile);
@@ -2985,24 +3128,42 @@ class IncrementalReadingPlugin extends Plugin {
     }
   }
 
-  async nextElement() {
-    const active = this.app.workspace.getActiveFile();
-    let queue = await this.readSessionSnapshot();
-    if (queue !== null) {
-      queue = queue.filter(p => !active || p.tfile.path !== active.path);
-    } else {
-      const pool = await this.buildDuePool();
-      if (pool.length === 0) { new Notice('✨ Nothing due. Caught up.'); return; }
-      queue = this.buildInterleavedQueue(pool, todayDate());
-      // Persist so dashboard renders the same order on next open.
-      await this.persistSessionSnapshot(queue);
-    }
-    if (!queue || queue.length === 0) { new Notice('✨ Caught up.'); return; }
+  async buildSessionQueue({ openFirst = false } = {}) {
+    const pool = await this.buildDuePool({ skipCurrent: false });
+    const queue = this.buildInterleavedQueue(pool, todayDate());
+    await this.persistSessionSnapshot(queue);
+    this._markCollectionViewsStale();
+    this._flushDeferredCollectionRenders();
+    if (!queue.length) { new Notice('✨ Nothing due. Caught up.'); return; }
+    new Notice(`Built today's queue with ${queue.length} element${queue.length === 1 ? '' : 's'}.`);
+    if (openFirst) await this.nextElement({ fromStart: true });
+  }
 
-    const next = queue[0];
-    await this.openLearningItem(next);
-    const action = next.fm.type === 'card' ? '🃏 Review' : (next.fm.type === 'source' ? '📖 Read' : '📝 Process');
-    new Notice(`${action}: ${next.tfile.basename} · p${next.fm.priority ?? '—'} · ${queue.length - 1} more in queue`);
+  async nextElement({ fromStart = false } = {}) {
+    const session = this.settings.session;
+    if (session?.date !== todayDateString(this.settings) || !Array.isArray(session.paths)) {
+      new Notice("No saved queue for today. Run Build today's session queue first.");
+      return;
+    }
+    const activePath = this.app.workspace.getActiveFile()?.path;
+    const candidates = savedQueueCandidates(session.paths, activePath, fromStart);
+    const next = candidates
+      .map(path => this.app.vault.getAbstractFileByPath(path))
+      .find(file => file instanceof TFile);
+    if (!next) { new Notice('✨ Caught up.'); return; }
+
+    // Deliberately navigation-only: no due validation, queue build, state
+    // persistence, read-point jump, card review dispatch, or view refresh.
+    this.directQueueNavigationDepth++;
+    this.directQueueNavigation = true;
+    try {
+      await this.app.workspace.getLeaf(false).openFile(next);
+    } finally {
+      window.setTimeout(() => {
+        this.directQueueNavigationDepth = Math.max(0, this.directQueueNavigationDepth - 1);
+        this.directQueueNavigation = this.directQueueNavigationDepth > 0;
+      }, 0);
+    }
   }
 
   async randomDue() {
@@ -3014,23 +3175,31 @@ class IncrementalReadingPlugin extends Plugin {
     new Notice(`🎲 ${action}: ${pick.tfile.basename} · p${pick.fm.priority ?? '—'} (1 of ${pool.length} due)`);
   }
 
-  async gradeAndAdvance() {
+  async gradeCurrent() {
     return this._withDeferredCollectionRenders(async () => {
       const active = this.app.workspace.getActiveFile();
       if (getFm(this.app, active)?.type === 'card') {
-        // Spaced Repetition has already graded the card. Mark this card row as
-        // consumed only now (not when it opens, since the review may be cancelled)
-        // and continue the mixed stream instead of reopening the same review UI.
+        const completed = active && this.completedSpacedRepetitionReviews.get(active.path);
+        if (!completed || Date.now() - completed.completedAt > 10 * 60 * 1000) {
+          if (active) this.completedSpacedRepetitionReviews.delete(active.path);
+          new Notice('Review and answer this card in Spaced Repetition before grading it.');
+          return false;
+        }
+        this.completedSpacedRepetitionReviews.delete(active.path);
         if (active) this.consumeSessionItem(active.path, { background: true });
-        await this.nextElement();
-        return;
+        new Notice('Card finished. Run Next element when you are ready.');
+        return true;
       }
       const graded = await this.endSession();
       if (graded) {
         if (active) this.consumeSessionItem(active.path, { background: true });
-        await this.nextElement();
+        new Notice('Element graded. Run Next element when you are ready.');
       }
-    });
+      // Let metadata notifications land while collection rendering is still
+      // deferred. Views remain stale until a later explicit refresh.
+      await new Promise(resolve => window.setTimeout(resolve, 0));
+      return graded;
+    }, { flush: false });
   }
 
   // ---- End Session (A-Factor topics; cards delegate to Spaced Repetition) -
@@ -3194,11 +3363,8 @@ class IncrementalReadingPlugin extends Plugin {
         return (lr && tdy) ? Math.max(0, Math.round((tdy - lr) / 86400000)) : 0;
       })();
       const row = `| ${today} | [[${file.basename}]] | ${fm.type} | — | ${elapsedDays} |  |  |  | ${round4(priorAFactor)} | ${round4(aFactor)} |\n`;
-      this.app.vault.append(logFile, row).then(() => {
-        for (const leaf of this.app.workspace.getLeavesOfType(MAIN_DASHBOARD_VIEW_TYPE)) {
-          leaf.view?._requestRender?.();
-        }
-      }).catch(error => console.error('[IR] background review-log append failed', error));
+      this.app.vault.append(logFile, row)
+        .catch(error => console.error('[IR] background review-log append failed', error));
     }
 
     const typeLabel = fm.type === 'source' ? 'Source' : 'Extract';

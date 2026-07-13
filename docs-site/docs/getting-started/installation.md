@@ -27,7 +27,8 @@ Reload Obsidian, enable Spaced Repetition, then enable the Toolkit.
 Keep the default folders initially. Add convenient hotkeys for:
 
 - **Next element**
-- **Grade and advance**
+- **Build today's session queue**
+- **Grade current element**
 - **Extract selection**
 - **Flashcard from clipboard**
 - **Open reading queue sidebar**
