@@ -1,5 +1,23 @@
 # Incremental Reading Toolkit changelog
 
+## Unreleased
+
+### Fixed
+- Switching between notes no longer rebuilds the entire Reading Queue. Navigation refreshes only the
+  active timeline, while queue rows and card due-state checks remain cached until relevant data changes.
+- Hidden dashboard and knowledge-tree tabs defer metadata-driven rendering until they become visible.
+- Queue, dashboard, tree, due-item, and subtree operations now share one cached collection index instead
+  of repeatedly walking every toolkit folder and rereading the same metadata.
+- Large queue sections render in batches, and body-only or unrelated vault edits no longer invalidate
+  collection views and derived indexes.
+- Grading advances immediately after updating the in-memory session, persists session state in the
+  background, appends the review log asynchronously, completes topic scheduling with a single
+  frontmatter write, and coalesces collection-view refreshes until the next learning item is open.
+
+### Added
+- Added a **Performance diagnostics** command that reports folder-scan, metadata, tree-index, and due-pool
+  timings in a notice and the developer console.
+
 ## 1.1.4 — 2026-07-13
 
 ### Added
