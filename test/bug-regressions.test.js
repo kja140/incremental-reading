@@ -47,6 +47,26 @@ test('asynchronous queue refreshes discard stale results', () => {
   assert.match(main, /generation !== this\.rowsGeneration/);
 });
 
+test('collection views ignore body-only metadata refreshes', () => {
+  assert.match(main, /if \(!irViewMetadataChanged\(this, file\)\) return;/);
+  assert.match(main, /IR_VIEW_FRONTMATTER_FIELDS/);
+});
+
+test('due card reads use bounded concurrency', () => {
+  assert.match(main, /async function filterAsyncConcurrent/);
+  assert.match(main, /return filterAsyncConcurrent\(candidates, async item =>/);
+  assert.match(main, /Math\.min\(Math\.max\(1, concurrency\), items\.length\)/);
+});
+
+test('stats command opens the visual analytics dashboard', () => {
+  const method = main.match(/async stats\(\) \{([\s\S]*?)\n  \}/)?.[1] || '';
+  assert.match(method, /openDashboard\('stats'\)/);
+  assert.doesNotMatch(method, /new Notice/);
+  assert.match(main, /_activityChart\(parent, days\)/);
+  assert.match(main, /_distributionChart\(parent, rows\)/);
+  assert.match(main, /Learning analytics/);
+});
+
 test('page, priority, and boost prompts reject partially numeric input', () => {
   assert.doesNotMatch(main, /const p = parseInt\(raw, 10\)/);
   assert.match(main, /Enter a positive whole page number/);

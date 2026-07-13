@@ -39,4 +39,4 @@ title: Command reference
 
 ## Organise and navigate
 
-Set/boost priority; open Dashboard, Reading Queue, or Knowledge Tree; create a category; move an element; open its parent; open a PDF; toggle/jump to a read point; add a timeline checkpoint; split articles or books; and show Stats.
+Set/boost priority; open Dashboard, Reading Queue, or Knowledge Tree; create a category; move an element; open its parent; open a PDF; toggle/jump to a read point; add a timeline checkpoint; split articles or books; and open the Stats analytics dashboard.
