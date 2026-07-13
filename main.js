@@ -913,6 +913,54 @@ function getFm(app, file) {
   return file ? app.metadataCache.getFileCache(file)?.frontmatter : null;
 }
 
+// View refreshes used to run after every edit in the vault. Keep a compact
+// signature of only the metadata the dashboard, queue, and tree actually use,
+// so changing a note's body does not rebuild all three views while typing.
+const IR_VIEW_FRONTMATTER_FIELDS = [
+  'type', 'status', 'priority', 'next_review', 'last_reviewed', 'parent',
+  'source', 'tree_root', 'tree_order', 'tags', 'checkpoints',
+];
+
+function irViewSignature(app, file) {
+  if (!file || file.extension !== 'md') return null;
+  const cache = app.metadataCache.getFileCache(file);
+  const fm = cache?.frontmatter;
+  if (!fm || !['category', 'source', 'extract', 'card'].includes(fm.type)) return null;
+  const selected = {};
+  for (const key of IR_VIEW_FRONTMATTER_FIELDS) selected[key] = fm[key];
+  const inlineTags = (cache.tags || []).map(tag => tag.tag);
+  return JSON.stringify([selected, inlineTags]);
+}
+
+function captureIRViewSignatures(app, settings) {
+  return new Map(getAllIRFiles(app, settings).map(file => [file.path, irViewSignature(app, file)]));
+}
+
+function irViewMetadataChanged(view, file) {
+  const next = irViewSignature(view.plugin.app, file);
+  const previous = view.irViewSignatures.get(file.path) ?? null;
+  if (next === null) view.irViewSignatures.delete(file.path);
+  else view.irViewSignatures.set(file.path, next);
+  return next !== previous;
+}
+
+// Obsidian's cachedRead still returns a promise. Checking hundreds of card
+// notes serially makes opening a session scale with the sum of every read.
+// A small worker pool overlaps the independent reads without flooding a vault.
+async function filterAsyncConcurrent(items, predicate, concurrency = 16) {
+  const keep = new Array(items.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      keep[index] = await predicate(items[index], index);
+    }
+  };
+  const count = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(Array.from({ length: count }, worker));
+  return items.filter((_item, index) => keep[index]);
+}
+
 function configuredPath(settings, key, fallback) {
   const value = String(settings?.paths?.[key] || fallback).trim();
   return normalizePath(value);
@@ -1218,10 +1266,19 @@ class IRQueueView extends ItemView {
   getIcon() { return 'list-checks'; }
 
   async onOpen() {
+    this.irViewSignatures = captureIRViewSignatures(this.plugin.app, this.plugin.settings);
     this._render();
-    this.registerEvent(this.plugin.app.vault.on('modify', () => {
+    this.registerEvent(this.plugin.app.metadataCache.on('changed', (file) => {
+      if (!irViewMetadataChanged(this, file)) return;
       if (this.modifyTimer) window.clearTimeout(this.modifyTimer);
       this.modifyTimer = window.setTimeout(() => this._render(), 250);
+    }));
+    // Spaced Repetition stores scheduling in an HTML comment in the card body,
+    // so card-body writes are the one non-frontmatter edit that affects queues.
+    this.registerEvent(this.plugin.app.vault.on('modify', (file) => {
+      if (getFm(this.plugin.app, file)?.type !== 'card') return;
+      if (this.modifyTimer) window.clearTimeout(this.modifyTimer);
+      this.modifyTimer = window.setTimeout(() => this._renderRows(this.containerEl.children[1]), 250);
     }));
     this.registerEvent(this.plugin.app.workspace.on('active-leaf-change', () => this._render()));
     this.refreshTimer = window.setInterval(() => this._render(), 30000);
@@ -1686,13 +1743,27 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
 const TREE_ICONS = { category: '📁', source: '📖', extract: '✂️', card: '🃏' };
 
 class MainDashboardView extends ItemView {
-  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.timer = null; }
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    this.timer = null;
+    this.irViewSignatures = new Map();
+    this.renderGeneration = 0;
+    this.scrollToStatsOnRender = false;
+  }
   getViewType() { return MAIN_DASHBOARD_VIEW_TYPE; }
   getDisplayText() { return 'Learning dashboard'; }
   getIcon() { return 'layout-dashboard'; }
   async onOpen() {
+    this.irViewSignatures = captureIRViewSignatures(this.plugin.app, this.plugin.settings);
     this.render();
-    this.registerEvent(this.plugin.app.metadataCache.on('changed', () => {
+    this.registerEvent(this.plugin.app.metadataCache.on('changed', (file) => {
+      if (!irViewMetadataChanged(this, file)) return;
+      if (this.timer) window.clearTimeout(this.timer);
+      this.timer = window.setTimeout(() => this.render(), 250);
+    }));
+    this.registerEvent(this.plugin.app.vault.on('modify', (file) => {
+      if (getFm(this.plugin.app, file)?.type !== 'card') return;
       if (this.timer) window.clearTimeout(this.timer);
       this.timer = window.setTimeout(() => this.render(), 250);
     }));
@@ -1703,7 +1774,41 @@ class MainDashboardView extends ItemView {
     card.createDiv({ cls: 'ir-dashboard-metric-value', text: String(value) });
     card.createDiv({ cls: 'ir-dashboard-metric-label', text: label });
   }
+  _activityChart(parent, days) {
+    const max = Math.max(1, ...days.map(day => day.count));
+    const chart = parent.createDiv({ cls: 'ir-dashboard-activity-chart' });
+    chart.setAttribute('role', 'img');
+    chart.setAttribute('aria-label', `Topic reviews over the last ${days.length} days`);
+    for (const [index, day] of days.entries()) {
+      const column = chart.createDiv({ cls: 'ir-dashboard-activity-column' });
+      const value = column.createDiv({ cls: 'ir-dashboard-activity-value', text: String(day.count) });
+      value.toggleClass('is-zero', day.count === 0);
+      const track = column.createDiv({ cls: 'ir-dashboard-activity-track' });
+      const bar = track.createDiv({ cls: 'ir-dashboard-activity-bar' });
+      bar.style.height = `${day.count ? Math.max(8, day.count / max * 100) : 2}%`;
+      bar.title = `${day.label}: ${day.count} review${day.count === 1 ? '' : 's'}`;
+      const label = column.createDiv({
+        cls: 'ir-dashboard-activity-label',
+        text: index === days.length - 1 ? 'Today' : (index % 2 === 0 ? day.shortLabel : ''),
+      });
+      label.title = day.label;
+    }
+  }
+  _distributionChart(parent, rows) {
+    const max = Math.max(1, ...rows.map(row => row.value));
+    const chart = parent.createDiv({ cls: 'ir-dashboard-distribution' });
+    for (const row of rows) {
+      const item = chart.createDiv({ cls: 'ir-dashboard-distribution-row' });
+      const heading = item.createDiv({ cls: 'ir-dashboard-distribution-heading' });
+      heading.createSpan({ text: row.label });
+      heading.createSpan({ text: String(row.value) });
+      const track = item.createDiv({ cls: 'ir-dashboard-distribution-track' });
+      const bar = track.createDiv({ cls: `ir-dashboard-distribution-bar ${row.tone || ''}`.trim() });
+      bar.style.width = `${row.value ? Math.max(3, row.value / max * 100) : 0}%`;
+    }
+  }
   async render() {
+    const generation = ++this.renderGeneration;
     const root = this.containerEl.children[1];
     root.empty(); root.addClass('ir-dashboard-root');
     const files = getAllIRFiles(this.plugin.app, this.plugin.settings);
@@ -1715,6 +1820,61 @@ class MainDashboardView extends ItemView {
     const due = active.filter(row => isDue(row.fm, today, this.plugin.settings));
     const overdue = active.filter(row => isPastDue(row.fm, today, this.plugin.settings));
     const reviewed = topics.filter(row => row.fm.last_reviewed === todayDateString(this.plugin.settings));
+
+    const activity = [];
+    const activityByDate = new Map();
+    for (let offset = 13; offset >= 0; offset--) {
+      const date = new Date(today.getTime());
+      date.setDate(date.getDate() - offset);
+      const key = formatDateValue(date, this.plugin.settings);
+      const item = {
+        key,
+        label: date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }),
+        shortLabel: date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }),
+        count: 0,
+      };
+      activity.push(item);
+      activityByDate.set(key, item);
+    }
+    let lifetimeReviews = 0;
+    const logFile = this.plugin.app.vault.getAbstractFileByPath(this.plugin.reviewLogPath());
+    if (logFile instanceof TFile) {
+      try {
+        const log = await this.plugin.app.vault.cachedRead(logFile);
+        if (generation !== this.renderGeneration) return;
+        for (const line of log.split('\n')) {
+          const firstCell = line.match(/^\|\s*([^|]+?)\s*\|/)?.[1];
+          const date = parseDateValue(firstCell, this.plugin.settings);
+          if (!date) continue;
+          lifetimeReviews++;
+          const bucket = activityByDate.get(formatDateValue(date, this.plugin.settings));
+          if (bucket) bucket.count++;
+        }
+      } catch (error) {
+        this.plugin._dbg('Could not read review log for dashboard', error);
+      }
+    }
+    if (lifetimeReviews === 0) {
+      // Vaults without a review log still get useful, conservative activity
+      // from each topic's latest review and lifetime frontmatter counters.
+      for (const row of topics) {
+        const date = parseDateValue(row.fm.last_reviewed, this.plugin.settings);
+        const bucket = date && activityByDate.get(formatDateValue(date, this.plugin.settings));
+        if (bucket) bucket.count++;
+        lifetimeReviews += Math.max(0, Number(row.fm.review_count) || 0);
+      }
+    }
+    const reviewsToday = activity[activity.length - 1].count || reviewed.length;
+    const reviewsThisWeek = activity.slice(-7).reduce((sum, day) => sum + day.count, 0);
+    const unscheduled = active.filter(row => !row.fm.next_review).length;
+    const dueToday = active.filter(row => {
+      const date = parseDateValue(row.fm.next_review, this.plugin.settings);
+      return date && date.getTime() === today.getTime();
+    }).length;
+    const upcoming = active.filter(row => {
+      const date = parseDateValue(row.fm.next_review, this.plugin.settings);
+      return date && date > today;
+    }).length;
 
     const head = root.createDiv({ cls: 'ir-dashboard-head' });
     const title = head.createDiv();
@@ -1733,7 +1893,8 @@ class MainDashboardView extends ItemView {
     const metrics = root.createDiv({ cls: 'ir-dashboard-metrics' });
     this._metric(metrics, due.length, 'Due topics', due.length ? 'is-warning' : '');
     this._metric(metrics, overdue.length, 'Overdue', overdue.length ? 'is-danger' : '');
-    this._metric(metrics, reviewed.length, 'Reviewed today', 'is-success');
+    this._metric(metrics, reviewsToday, 'Reviewed today', 'is-success');
+    this._metric(metrics, reviewsThisWeek, 'Reviews · 7 days');
     this._metric(metrics, cards.length, 'Card notes');
     this._metric(metrics, active.length, 'Active topics');
 
@@ -1743,6 +1904,7 @@ class MainDashboardView extends ItemView {
     const savedSession = await this.plugin.readSessionSnapshot();
     const session = savedSession
       || this.plugin.buildInterleavedQueue(await this.plugin.buildDuePool({ skipCurrent: false }), today);
+    if (generation !== this.renderGeneration) return;
     if (!session.length) sessionPanel.createEl('p', { text: 'Nothing due — you are caught up.' });
     for (const row of session.slice(0, 12)) {
       const item = sessionPanel.createDiv({ cls: 'ir-dashboard-session-row' });
@@ -1760,6 +1922,38 @@ class MainDashboardView extends ItemView {
       line.createSpan({ text: status }); line.createSpan({ text: String(count) });
     }
     health.createEl('p', { cls: 'ir-dashboard-note', text: 'Topic intervals use progress-aware A-Factors. Card due dates and grades remain owned by Spaced Repetition.' });
+
+    const analytics = root.createDiv({ cls: 'ir-dashboard-analytics' });
+    analytics.createEl('h2', { text: 'Learning analytics' });
+    const analyticsGrid = analytics.createDiv({ cls: 'ir-dashboard-analytics-grid' });
+    const activityPanel = analyticsGrid.createDiv({ cls: 'ir-dashboard-panel ir-dashboard-panel-wide' });
+    const activityHead = activityPanel.createDiv({ cls: 'ir-dashboard-chart-head' });
+    activityHead.createEl('h3', { text: 'Review activity' });
+    activityHead.createSpan({ text: `${reviewsThisWeek} this week · ${lifetimeReviews} lifetime` });
+    this._activityChart(activityPanel, activity);
+
+    const workloadPanel = analyticsGrid.createDiv({ cls: 'ir-dashboard-panel' });
+    workloadPanel.createEl('h3', { text: 'Queue workload' });
+    this._distributionChart(workloadPanel, [
+      { label: 'Overdue', value: overdue.length, tone: 'is-danger' },
+      { label: 'Due today', value: dueToday, tone: 'is-warning' },
+      { label: 'Unscheduled', value: unscheduled, tone: 'is-accent' },
+      { label: 'Upcoming', value: upcoming, tone: 'is-success' },
+    ]);
+
+    const mixPanel = analyticsGrid.createDiv({ cls: 'ir-dashboard-panel' });
+    mixPanel.createEl('h3', { text: 'Collection mix' });
+    this._distributionChart(mixPanel, [
+      { label: 'Sources', value: topics.filter(row => row.fm.type === 'source').length, tone: 'is-accent' },
+      { label: 'Extracts', value: topics.filter(row => row.fm.type === 'extract').length, tone: 'is-warning' },
+      { label: 'Card notes', value: cards.length, tone: 'is-success' },
+    ]);
+    mixPanel.createEl('p', { cls: 'ir-dashboard-note', text: 'Card review history remains available in the Spaced Repetition plugin.' });
+
+    if (this.scrollToStatsOnRender) {
+      this.scrollToStatsOnRender = false;
+      window.setTimeout(() => analytics.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+    }
   }
 }
 
@@ -1804,6 +1998,7 @@ class KnowledgeTreeView extends ItemView {
     this._match = null;
     this.index = null;
     this.refreshTimer = null;
+    this.irViewSignatures = new Map();
   }
 
   getViewType() { return this.mode === 'sidebar' ? KNOWLEDGE_TREE_SIDEBAR_TYPE : KNOWLEDGE_TREE_VIEW_TYPE; }
@@ -1811,8 +2006,10 @@ class KnowledgeTreeView extends ItemView {
   getIcon() { return 'folder-tree'; }
 
   async onOpen() {
+    this.irViewSignatures = captureIRViewSignatures(this.plugin.app, this.plugin.settings);
     this._render();
-    this.registerEvent(this.plugin.app.metadataCache.on('changed', () => {
+    this.registerEvent(this.plugin.app.metadataCache.on('changed', (file) => {
+      if (!irViewMetadataChanged(this, file)) return;
       if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
       this.refreshTimer = window.setTimeout(() => this._renderBody(), 300);
     }));
@@ -2434,19 +2631,21 @@ class IncrementalReadingPlugin extends Plugin {
   async buildDuePool({ skipCurrent = true } = {}) {
     const today = todayDate();
     const active = this.app.workspace.getActiveFile();
-    const out = [];
+    const candidates = [];
     for (const f of getAllIRFiles(this.app, this.settings)) {
       if (skipCurrent && active && f.path === active.path) continue;
       const fm = getFm(this.app, f);
       if (!isActiveIR(fm)) continue;
       if (fm.type === 'card') {
         if (this.settings.queue.mix_cards === false || !this.isSpacedRepetitionReady()) continue;
-        const content = await this.app.vault.cachedRead(f);
-        if (!spacedRepetitionCardIsDue(content, today)) continue;
       } else if (!isDue(fm, today, this.settings)) continue;
-      out.push({ tfile: f, fm });
+      candidates.push({ tfile: f, fm });
     }
-    return out;
+    return filterAsyncConcurrent(candidates, async item => {
+      if (item.fm.type !== 'card') return true;
+      const content = await this.app.vault.cachedRead(item.tfile);
+      return spacedRepetitionCardIsDue(content, today);
+    });
   }
 
   // Read the dashboard's session snapshot (path list persisted as
@@ -2465,7 +2664,7 @@ class IncrementalReadingPlugin extends Plugin {
     }
     if (paths === null) return null;
     const today = todayDate();
-    const out = [];
+    const candidates = [];
     const seen = new Set();
     for (const p of paths) {
       if (seen.has(p)) continue;   // drop duplicate snapshot keys
@@ -2477,12 +2676,14 @@ class IncrementalReadingPlugin extends Plugin {
       if (f.last_reviewed === todayStr) continue;
       if (f.type === 'card') {
         if (this.settings.queue.mix_cards === false || !this.isSpacedRepetitionReady()) continue;
-        const content = await this.app.vault.cachedRead(tf);
-        if (!spacedRepetitionCardIsDue(content, today)) continue;
       } else if (!isDue(f, today, this.settings)) continue;
-      out.push({ tfile: tf, fm: f });
+      candidates.push({ tfile: tf, fm: f });
     }
-    return out;
+    return filterAsyncConcurrent(candidates, async item => {
+      if (item.fm.type !== 'card') return true;
+      const content = await this.app.vault.cachedRead(item.tfile);
+      return spacedRepetitionCardIsDue(content, today);
+    });
   }
 
   async persistSessionSnapshot(queue) {
@@ -3895,13 +4096,17 @@ ${body}
 
   // ---- Navigation --------------------------------------------------------
 
-  async openDashboard() {
+  async openDashboard(section = null) {
     let leaf = this.app.workspace.getLeavesOfType(MAIN_DASHBOARD_VIEW_TYPE)[0];
     if (!leaf) {
       leaf = this.app.workspace.getLeaf('tab');
       await leaf.setViewState({ type: MAIN_DASHBOARD_VIEW_TYPE, active: true });
     }
     this.app.workspace.revealLeaf(leaf);
+    if (section === 'stats' && leaf.view instanceof MainDashboardView) {
+      leaf.view.scrollToStatsOnRender = true;
+      await leaf.view.render();
+    }
   }
 
   async openParent() {
@@ -4030,65 +4235,7 @@ ${body}
   // ---- Stats -------------------------------------------------------------
 
   async stats() {
-    const today = todayDate();
-    const weekAgo = new Date(today.getTime() - 7 * 86400000);
-    let nSrc = 0, nExt = 0, nCard = 0;
-    let nDone = 0, nDismissed = 0, nInbox = 0;
-    let overdue = 0, dueToday = 0, future = 0;
-    let todayRev = 0, weekRev = 0;
-    let todaySrc = 0, todayExt = 0;
-    for (const f of getAllIRFiles(this.app, this.settings)) {
-      const fm = getFm(this.app, f);
-      if (!fm) continue;
-      if (fm.type !== 'source' && fm.type !== 'extract' && fm.type !== 'card') continue;
-      if (fm.type === 'card') { nCard++; continue; }
-      const lr = parseDateValue(fm.last_reviewed, this.settings);
-      if (lr) {
-        if (lr.getTime() === today.getTime()) {
-          todayRev++;
-          if (fm.type === 'source') todaySrc++;
-          else if (fm.type === 'extract') todayExt++;
-        }
-        if (lr >= weekAgo) weekRev++;
-      }
-      if (fm.status === 'done') { nDone++; continue; }
-      if (fm.status === 'dismissed') { nDismissed++; continue; }
-      if (fm.status === 'container') continue;
-      if (fm.status === 'inbox') { nInbox++; continue; }
-      if (fm.type === 'source') nSrc++;
-      else if (fm.type === 'extract') nExt++;
-      const nr = parseDateValue(fm.next_review, this.settings);
-      if (nr) {
-        const diff = daysBetween(today, nr);
-        if (diff > 0) overdue++;
-        else if (diff === 0) dueToday++;
-        else future++;
-      } else dueToday++;
-    }
-
-    let lifetime = 0;
-    const logFile = this.app.vault.getAbstractFileByPath(this.reviewLogPath());
-    if (logFile) {
-      const log = await this.app.vault.read(logFile);
-      const rows = log.split('\n').filter(line => {
-        const firstCell = line.match(/^\|\s*([^|]+?)\s*\|/)?.[1];
-        return !!parseDateValue(firstCell, this.settings);
-      });
-      lifetime = rows.length;
-    }
-
-    const lines = [
-      '**Incremental Reading Toolkit stats**', '',
-      `📊 Reading topics: ${nSrc + nExt} active (${nSrc}s / ${nExt}x) · ${nCard} card files`,
-      `📅 Queue: 🔴 ${overdue} overdue · 🟡 ${dueToday} due today · 🟢 ${future} scheduled`,
-      `📦 Inbox: ${nInbox} · ✅ Done: ${nDone} · 🚫 Dismissed: ${nDismissed}`, '',
-      `🔥 Today: ${todayRev} topics reviewed (${todaySrc}s / ${todayExt}x)`,
-      `📆 Last 7 days: ${weekRev} reviewed`,
-      `🗂️ Lifetime reading log: ${lifetime} reviews`,
-      'Card scheduling and statistics are in Spaced Repetition.',
-    ];
-    new Notice(lines.join('\n'), 12000);
-    this._dbg(lines.join('\n'));
+    await this.openDashboard('stats');
   }
 
   // ---- Splits ------------------------------------------------------------

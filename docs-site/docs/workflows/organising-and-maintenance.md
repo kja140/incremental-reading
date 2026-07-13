@@ -13,6 +13,6 @@ Maintenance commands include:
 - **Postpone subtree** when a whole branch should wait;
 - **Subset review** for a focused collection;
 - **Mercy (spread overdue)** for backlog recovery;
-- **Stats** for a quick summary.
+- **Stats** for review trends, queue workload, collection mix, and lifetime totals in the analytics dashboard.
 
 Avoid reorganizing as a substitute for reading. A small imperfect tree that you use is more valuable than a perfect taxonomy you maintain endlessly.
