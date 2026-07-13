@@ -2,6 +2,8 @@
 
 Incremental reading for Obsidian. Read long sources a little at a time, extract the parts that matter, and turn extracts into flashcards from commands that work with PDFs, notes, and images.
 
+Find more detailed docs here: [incremental-reading](https://incremental-reading.kjames.xyz/)
+
 Incremental Reading Toolkit schedules reading topics with an A-Factor and presents topics and card notes in one mixed learning stream. Flashcard scheduling and grading are delegated to the actively maintained [Spaced Repetition](https://github.com/st3v3nmw/obsidian-spaced-repetition) community plugin.
 
 - **Topics** (`source`, `extract`) use the reading queue and A-Factor scheduling.
