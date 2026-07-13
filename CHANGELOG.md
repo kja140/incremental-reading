@@ -1,5 +1,19 @@
 # Incremental Reading Toolkit changelog
 
+## 1.1.4 — 2026-07-13
+
+### Added
+- Replaced the temporary **Stats** notice with a responsive analytics dashboard showing 14-day review
+  activity, queue workload, collection mix, seven-day activity, and lifetime totals.
+- Refreshed the project README with clearer workflows, feature and command tables, installation paths,
+  and privacy documentation.
+
+### Changed
+- Dashboard, reading-queue, and knowledge-tree views now ignore body-only metadata updates instead of
+  rebuilding the full collection while a note is being edited.
+- Spaced Repetition card due checks now use bounded concurrent reads, speeding up dashboard and mixed
+  session loading in larger collections.
+
 ## 1.1.3 — 2026-07-13
 
 ### Fixed
