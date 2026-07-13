@@ -1,6 +1,6 @@
 # Incremental Reading Toolkit changelog
 
-## Unreleased
+## 1.1.5 — 2026-07-13
 
 ### Fixed
 - Switching between notes no longer rebuilds the entire Reading Queue. Navigation refreshes only the
