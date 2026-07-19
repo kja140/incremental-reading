@@ -41,7 +41,7 @@ SuperMemo describes incremental reading as importing electronic articles, readin
 
 SuperMemo presents topics and memory items through one learning system. Incremental Reading Toolkit now mirrors that presentation with a mixed daily stream: independently ranked reading topics and card notes alternate whenever both are available. It writes cards in native [Spaced Repetition](https://github.com/st3v3nmw/obsidian-spaced-repetition) Markdown and opens that plugin's per-note review interface for the actual card grade. This keeps cards compatible with a maintained Obsidian ecosystem instead of duplicating a second flashcard scheduler.
 
-As a result, `Build today's session queue` creates an interleaved topic/card session and `Next element` performs only lightweight saved-path navigation. Read points and Spaced Repetition review are explicit follow-up commands, keeping navigation independent from scheduling and view refreshes. `Review cards` remains available for a card-only session.
+As a result, `Build today's session queue` creates an interleaved topic/card session and `Next element` performs lightweight saved-path navigation before starting any follow-up action. Sources jump to their saved read point and cards start Spaced Repetition per-note review after the note paints. An accepted card review finishes that session item automatically; Spaced Repetition's global review command remains available for card-only study.
 
 ### Scheduling algorithms
 

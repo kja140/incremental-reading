@@ -18,11 +18,11 @@ The integrated viewer is desktop-only and supports PDF, not EPUB. For an externa
 
 ## The queue is overwhelming
 
-Use **Mercy (spread overdue)** to distribute the backlog. Dismiss low-value items, lower priorities that no longer reflect your goals, and postpone whole inactive branches where appropriate.
+Open **Advanced tools…** and use **Mercy (spread overdue)** to distribute the backlog. Use **Current element actions…** to dismiss or reprioritize low-value items.
 
 ## Parent/child structure looks wrong
 
-Open the Knowledge Tree and reparent by dragging, or use **Move active element under…**. Avoid manually editing managed frontmatter unless you are repairing a known field.
+Open the Knowledge Tree and reparent by dragging, or choose **Move active element under…** from **Advanced tools…**. Avoid manually editing managed frontmatter unless you are repairing a known field.
 
 ## Something changed after an upgrade
 

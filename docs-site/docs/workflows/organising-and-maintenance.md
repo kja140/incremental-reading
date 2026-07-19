@@ -4,9 +4,9 @@ title: Organising and maintenance
 
 # Organising and maintenance
 
-Use the **Reading Queue** for time: what is due and what comes next. Use the **Knowledge Tree** for structure: what belongs under what. Use the **Dashboard** for health: workload, sessions, and collection-level signals.
+Use **Open Toolkit view…** to reach the Reading Queue, Knowledge Tree, Dashboard, or analytics.
 
-Maintenance commands include:
+**Current element actions…** and **Advanced tools…** include:
 
 - **Set priority** and **Boost priority** for attention;
 - **Move active element under…** and drag-to-reparent for structure;

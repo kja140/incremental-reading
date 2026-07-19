@@ -11,19 +11,19 @@ This guide starts with a small daily workflow. You do not need to configure ever
 
 Changing the date format migrates existing scheduling fields, checkpoints, dashboard dates, and review-log dates.
 
-Select **Open user guide** at the top of the settings page, or run **Incremental Reading Toolkit: Open user guide**, whenever you want the quickstart and recommended hotkeys inside Obsidian. The plugin's **Help** action opens the project README directly.
+Select **Open user guide** at the top of the settings page, or choose **User guide** from **Open Toolkit view…**, whenever you want the quickstart and recommended hotkeys inside Obsidian. The plugin's **Help** action opens the project README directly.
 
 ## Five-minute quickstart
 
-1. Open an article note and run **Import clipping (active note)**, or run **New source** to create a book, PDF, article, or video source.
+1. Open **Capture or create…**, then choose **Import clipping (active note)** or **New source** to create a book, PDF, article, or video source.
 2. Run **Build today's session queue**, then use **Next element** to open the next saved item.
 3. Read a useful portion rather than trying to finish the source.
-4. Select an important passage and run **Extract selection**. For a PDF, copy the passage and run **Extract from clipboard (PDF-aware)**.
-5. Leave the cursor where you stopped. Run **Grade current element**, choose whether to update the read point, then choose the topic pace. Run **Next element** separately when ready.
+4. Select an important passage and run **Extract selection**. For a PDF, copy the passage, open **Capture or create…**, and choose **Extract from clipboard (PDF-aware)**.
+5. Leave the cursor where you stopped. Run **Grade current reading topic**, choose whether to update the read point, then choose the topic pace. Run **Next element** separately when ready.
 6. When a passage should become durable memory, copy it and run **Flashcard from clipboard**.
-7. Continue with **Next element** for a mixed topic/card session. When it opens a card note, run **Review cards in current note**, answer the card, then run **Grade current element**. Use **Review cards (Spaced Repetition)** for card-only study.
+7. Continue with **Next element** for a mixed topic/card session. When it opens a card note, the Toolkit starts Spaced Repetition automatically. Answering the review finishes that queue item; press **Next element** when ready. Use Spaced Repetition's own global review command for card-only study.
 
-The learning queue alternates sources/extracts with card notes. **Next element** only opens the next saved path. Topic scheduling uses the Toolkit A-Factor model; **Review cards in current note** hands a card's grading and interval to Spaced Repetition.
+The learning queue alternates sources/extracts with card notes. **Next element** opens the next saved path first, then starts per-note card review when needed. Topic scheduling uses the Toolkit A-Factor model; card grading and intervals remain owned by Spaced Repetition.
 
 ## Set up keybindings
 
@@ -39,34 +39,32 @@ The plugin does not assign default hotkeys. This avoids overwriting shortcuts al
 | Workflow | Command | Suggested hotkey |
 | --- | --- | --- |
 | Start or continue reading | Next element | `Cmd/Ctrl+Shift+J` |
-| Finish the current portion | Grade current element | `Cmd/Ctrl+Shift+Enter` |
+| Finish the current portion | Grade current reading topic | `Cmd/Ctrl+Shift+Enter` |
 | Save selected text | Extract selection | `Cmd/Ctrl+Shift+E` |
-| Capture from a PDF or clipboard | Extract from clipboard (PDF-aware) | `Cmd/Ctrl+Alt+E` |
 | Create a card | Flashcard from clipboard | `Cmd/Ctrl+Shift+F` |
-| Mark your place | Toggle read-point | `Cmd/Ctrl+Shift+P` |
-| Study cards | Review cards (Spaced Repetition) | `Cmd/Ctrl+Shift+R` |
+| Scheduling and read-point actions | Current element actions… | `Cmd/Ctrl+Shift+A` |
 
-Start with **Build today's session queue**, **Next element**, **Grade current element**, and **Extract selection**. Add the others only when the workflow feels familiar.
+Start with **Build today's session queue**, **Next element**, **Grade current reading topic**, and **Extract selection**. Add the others only when the workflow feels familiar.
 
 ## Read notes and articles
 
-Use **Import clipping (active note)** on an existing Markdown note. The plugin adds scheduling frontmatter and moves the note into the configured sources folder when the destination is available.
+Choose **Import clipping (active note)** from **Capture or create…** on an existing Markdown note. The plugin adds scheduling frontmatter and moves the note into the configured sources folder when the destination is available.
 
 During each visit:
 
-1. Run **Jump to read-point** to return to the marker.
+1. Choose **Jump to read-point** from **Current element actions…** to return to the marker.
 2. Read until attention drops or you reach a useful stopping point.
 3. Create extracts from passages worth revisiting.
-4. Run **Grade current element** and update the marker to the cursor position.
+4. Run **Grade current reading topic** and update the marker to the cursor position.
 
 Moving the marker counts as progress. When the stall guard is enabled, an unchanged marker prevents the interval from growing.
 
 ## Read PDFs and books
 
-Create a source with **New source**, select **PDF** or **Book**, and enter a vault-relative or absolute PDF path. Use:
+Choose **New source** from **Capture or create…**, select **PDF** or **Book**, and enter a vault-relative or absolute PDF path. Use:
 
-- **Open PDF (Toolkit viewer)** for PDFs stored inside or outside the vault. Enter a page in the toolbar and use **Save read point** to update the source.
-- **Split book into chapters** to schedule chapters independently from a pasted page-range list.
+- **Open PDF (Toolkit viewer)** from **Current element actions…** for PDFs stored inside or outside the vault. Enter a page in the toolbar and use **Save read point** to update the source.
+- **Split book into chapters** from **Advanced tools…** to schedule chapters independently from a pasted page-range list.
 
 When grading, enter the page where you stopped. Chapter scheduling uses the chapter end page rather than the total length of the book.
 
@@ -86,6 +84,8 @@ Cards are ordinary Markdown notes tagged for Spaced Repetition. Configure review
 
 ## Manage a busy queue
 
+Use **Current element actions…** for one-note actions and **Advanced tools…** for subtree and backlog actions.
+
 - **Set priority**: lower numbers receive more attention.
 - **Postpone**: move one topic to a later date.
 - **Postpone subtree**: move a source and its descendants together.
@@ -96,7 +96,7 @@ Cards are ordinary Markdown notes tagged for Spaced Repetition. Configure review
 
 ## Organize the knowledge tree
 
-Open **Knowledge tree** to create categories, drag material under a parent, reorder siblings, or rename nodes. Files with duplicate basenames remain visible but cannot be used as parents until they are given unique names; this prevents ambiguous links from changing the wrong note.
+Choose **Knowledge tree** from **Open Toolkit view…** to create categories, drag material under a parent, reorder siblings, or rename nodes. Files with duplicate basenames remain visible but cannot be used as parents until they are given unique names; this prevents ambiguous links from changing the wrong note.
 
 ## Date formats
 
@@ -106,7 +106,7 @@ Select a format in **Settings -> Incremental Reading Toolkit -> General -> Date 
 - `MM-DD-YYYY`, for example `07-12-2026`;
 - `YYYY-MM-DD`, for example `2026-07-12`.
 
-The **Schedule (manual date)** command expects the selected format. Relative values such as `+3d`, `7d`, or `-1d` work with every convention.
+The **Schedule (manual date)** action expects the selected format. Relative values such as `+3d`, `7d`, or `-1d` work with every convention.
 
 ## Troubleshooting
 
@@ -116,7 +116,7 @@ Confirm Spaced Repetition is enabled and that its flashcard tags include `#flash
 
 **The review command says Spaced Repetition is starting**
 
-Reload Obsidian, then run **Review cards (Spaced Repetition)** again.
+Reload Obsidian, then run **Next element** again for a queued card or use Spaced Repetition's own review command.
 
 **A PDF does not open in the Toolkit viewer**
 

@@ -79,11 +79,11 @@ test('stats command opens the visual analytics dashboard', () => {
   assert.match(main, /Learning analytics/);
 });
 
-test('note navigation refreshes only the queue timeline', () => {
+test('note navigation defers timeline work and skips forced view visibility checks', () => {
   const queueOpen = main.slice(main.indexOf('class IRQueueView'), main.indexOf('//  Settings Tab'));
-  assert.match(queueOpen, /workspace\.on\('file-open',[\s\S]*?this\._refreshTimeline\(false, file\)/);
-  assert.match(queueOpen, /workspace\.on\('active-leaf-change',[\s\S]*?this\._refreshTimeline\(\)/);
-  assert.match(queueOpen, /if \(!this\.plugin\.directQueueNavigation\)/);
+  assert.match(queueOpen, /workspace\.on\('file-open',[\s\S]*?this\._scheduleTimelineRefresh\(file\)/);
+  assert.match(queueOpen, /_scheduleTimelineRefresh\(file\)[\s\S]*?\}, 120\)/);
+  assert.doesNotMatch(queueOpen, /active-leaf-change',[\s\S]{0,300}?isViewVisible\(this\)/);
   assert.doesNotMatch(queueOpen, /active-leaf-change', \(\) => this\._render\(\)/);
 });
 
@@ -123,7 +123,7 @@ test('collection-heavy features share one cached file and metadata index', () =>
 test('large queue sections render incrementally and diagnostics are available', () => {
   assert.match(main, /rows\.slice\(0, limit\)/);
   assert.match(main, /Show \$\{Math\.min\(100, rows\.length - limit\)\} more/);
-  assert.match(main, /cmd\('performance-diagnostics', 'Performance diagnostics'/);
+  assert.match(main, /label: 'Performance diagnostics', run: \(\) => this\.performanceDiagnostics\(\)/);
   assert.match(main, /async performanceDiagnostics\(\)/);
 });
 

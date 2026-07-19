@@ -318,6 +318,8 @@ const DEFAULT_SETTINGS = {
   session: {
     date: null,
     paths: [],
+    types: {},
+    readPoints: {},
   },
 };
 
@@ -1274,6 +1276,7 @@ class IRQueueView extends ItemView {
     this.refreshTimer = null;
     this.contentLeaf = null;
     this.modifyTimer = null;
+    this.timelineTimer = null;
     this.rowsGeneration = 0;
     this.queueRevision = 0;
     this.queueModel = null;
@@ -1324,11 +1327,13 @@ class IRQueueView extends ItemView {
     // Navigation changes only the active note's timeline. Queue rows are
     // independent of the active file and must not be rebuilt on every click.
     this.registerEvent(this.plugin.app.workspace.on('file-open', file => {
-      if (!this.plugin.directQueueNavigation) this._refreshTimeline(false, file);
+      if (!this.plugin.directQueueNavigation) this._scheduleTimelineRefresh(file);
     }));
     this.registerEvent(this.plugin.app.workspace.on('active-leaf-change', () => {
-      if (this.needsRowsRender && isViewVisible(this)) this._scheduleRowsRender('visible');
-      if (!this.plugin.directQueueNavigation) this._refreshTimeline();
+      if (this.plugin.directQueueNavigation) return;
+      if (this.needsRowsRender && this.plugin.app.workspace.activeLeaf === this.leaf) {
+        this._scheduleRowsRender('visible');
+      }
     }));
     this._scheduleDateRefresh();
   }
@@ -1336,6 +1341,7 @@ class IRQueueView extends ItemView {
   async onClose() {
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
     if (this.modifyTimer) window.clearTimeout(this.modifyTimer);
+    if (this.timelineTimer) window.clearTimeout(this.timelineTimer);
   }
 
   _invalidateQueueModel() {
@@ -1523,6 +1529,14 @@ class IRQueueView extends ItemView {
     if (this.timelineEl) this._renderTimeline(this.timelineEl, file);
   }
 
+  _scheduleTimelineRefresh(file) {
+    if (this.timelineTimer) window.clearTimeout(this.timelineTimer);
+    this.timelineTimer = window.setTimeout(() => {
+      this.timelineTimer = null;
+      if (!this.plugin.directQueueNavigation) this._refreshTimeline(false, file);
+    }, 120);
+  }
+
   _renderTimeline(root, active = this.plugin.app.workspace.getActiveFile()) {
     root.empty();
     if (!active) return;
@@ -1570,9 +1584,9 @@ class UserGuideModal extends Modal {
       'Open an article note and run Import clipping, or create a source with New source.',
       'Run Build today\'s session queue once, then use Next element to move through it.',
       'Select important text and run Extract selection.',
-      'Leave the cursor where you stopped, then run Grade current element.',
+      'Leave the cursor where you stopped, then run Grade current reading topic.',
       'Create recall material with Flashcard from clipboard.',
-      'Study cards with Review cards (Spaced Repetition).',
+      'Next element opens card review automatically; the answer finishes that queue item.',
     ]) quick.createEl('li', { text });
 
     root.createEl('h3', { text: 'Recommended hotkeys' });
@@ -1584,12 +1598,10 @@ class UserGuideModal extends Modal {
     const body = table.createEl('tbody');
     for (const [command, hotkey] of [
       ['Next element', 'Cmd/Ctrl+Shift+J'],
-      ['Grade current element', 'Cmd/Ctrl+Shift+Enter'],
+      ['Grade current reading topic', 'Cmd/Ctrl+Shift+Enter'],
       ['Extract selection', 'Cmd/Ctrl+Shift+E'],
-      ['Extract from clipboard', 'Cmd/Ctrl+Alt+E'],
       ['Flashcard from clipboard', 'Cmd/Ctrl+Shift+F'],
-      ['Toggle read-point', 'Cmd/Ctrl+Shift+P'],
-      ['Review cards', 'Cmd/Ctrl+Shift+R'],
+      ['Current element actions…', 'Cmd/Ctrl+Shift+A'],
     ]) {
       const row = body.createEl('tr');
       row.createEl('td', { text: command });
@@ -1599,7 +1611,7 @@ class UserGuideModal extends Modal {
     root.createEl('h3', { text: 'Daily reading loop' });
     const daily = root.createEl('ul');
     for (const text of [
-      'Build today\'s session queue performs scheduling work; Next element only opens the following saved path.',
+      'Build today\'s session queue performs scheduling work; Next element opens the saved path and starts card review when needed.',
       'Extracts remain reading topics; cards are reviewed in Spaced Repetition.',
       'Moving the Markdown read-point or advancing a page/timestamp counts as progress.',
       'Use Mercy to spread overdue work and Postpone subtree to move related material together.',
@@ -1904,7 +1916,8 @@ class MainDashboardView extends ItemView {
       }));
     }
     this.registerEvent(this.plugin.app.workspace.on('active-leaf-change', () => {
-      if (this.needsRender && isViewVisible(this)) this._requestRender();
+      if (this.plugin.directQueueNavigation) return;
+      if (this.needsRender && this.plugin.app.workspace.activeLeaf === this.leaf) this._requestRender();
     }));
   }
   async onClose() { if (this.timer) window.clearTimeout(this.timer); }
@@ -2176,7 +2189,8 @@ class KnowledgeTreeView extends ItemView {
       }));
     }
     this.registerEvent(this.plugin.app.workspace.on('active-leaf-change', () => {
-      if (this.needsRender && isViewVisible(this)) this._requestBodyRender();
+      if (this.plugin.directQueueNavigation) return;
+      if (this.needsRender && this.plugin.app.workspace.activeLeaf === this.leaf) this._requestBodyRender();
     }));
   }
   async onClose() {
@@ -2434,7 +2448,10 @@ class IncrementalReadingPlugin extends Plugin {
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       this.settings[key] = Object.assign({}, DEFAULT_SETTINGS[key], this.settings[key] || {});
     }
+    this.settings.session.types = { ...(this.settings.session.types || {}) };
+    this.settings.session.readPoints = { ...(this.settings.session.readPoints || {}) };
     this.cardDueCache = new Map();
+    this.cardScheduleSignatures = new Map();
     this.irFilesCache = null;
     this.irRowsCache = null;
     this.irMetadataSignatures = new Map();
@@ -2443,9 +2460,9 @@ class IncrementalReadingPlugin extends Plugin {
     this.directQueueNavigation = false;
     this.directQueueNavigationDepth = 0;
     this.pendingSpacedRepetitionReview = null;
-    this.completedSpacedRepetitionReviews = new Map();
     this.spacedRepetitionCloseGeneration = 0;
     this.spacedRepetitionCloseAttempt = 0;
+    this.sessionSaveTimer = null;
     this.treeIndexCache = null;
     this.duePoolCache = null;
     this.registerEvent(this.app.metadataCache.on('changed', file => {
@@ -2467,6 +2484,7 @@ class IncrementalReadingPlugin extends Plugin {
       }
       if (!isPathInIRCollection(this.settings, file.path)) return;
       this.cardDueCache.delete(file.path);
+      this.cardScheduleSignatures.delete(file.path);
       if (getFm(this.app, file)?.type === 'card') this.duePoolCache = null;
     }));
     this.registerEvent(this.app.vault.on('create', file => {
@@ -2474,17 +2492,16 @@ class IncrementalReadingPlugin extends Plugin {
     }));
     this.registerEvent(this.app.vault.on('delete', file => {
       this.cardDueCache.delete(file.path);
-      this.completedSpacedRepetitionReviews.delete(file.path);
+      this.cardScheduleSignatures.delete(file.path);
+      if (this.pendingSpacedRepetitionReview?.path === file.path) this.pendingSpacedRepetitionReview = null;
       if (isPathInIRCollection(this.settings, file?.path)) this._invalidateIRCollection(true);
     }));
     this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
       this.cardDueCache.delete(oldPath);
       this.cardDueCache.delete(file.path);
-      const completed = this.completedSpacedRepetitionReviews.get(oldPath);
-      if (completed) {
-        this.completedSpacedRepetitionReviews.delete(oldPath);
-        this.completedSpacedRepetitionReviews.set(file.path, completed);
-      }
+      this.cardScheduleSignatures.delete(oldPath);
+      this.cardScheduleSignatures.delete(file.path);
+      if (this.pendingSpacedRepetitionReview?.path === oldPath) this.pendingSpacedRepetitionReview.path = file.path;
       if (isPathInIRCollection(this.settings, oldPath)
           || isPathInIRCollection(this.settings, file?.path)) this._invalidateIRCollection(true);
     }));
@@ -2558,61 +2575,89 @@ class IncrementalReadingPlugin extends Plugin {
     // Core review loop
     cmd('build-session-queue','Build today\'s session queue',    () => this.buildSessionQueue());
     cmd('next-element',       'Next element',                    () => this.nextElement());
-    cmd('random-due',         'Random due element',              () => this.randomDue());
-    cmd('end-session',        'Grade current element',           () => this.gradeCurrent());
-    cmd('done',               'Done',                            () => this.markDone());
-    cmd('dismiss',            'Dismiss',                         () => this.dismiss());
-    cmd('postpone',           'Postpone',                        () => this.postpone());
-    cmd('schedule',           'Schedule (manual date)',          () => this.schedule());
-    cmd('review-cards',       'Review cards (Spaced Repetition)', () => this.reviewCards());
-    cmd('review-cards-in-note','Review cards in current note (Spaced Repetition)', () => this.reviewCardsInNote());
-    cmd('migrate-cards-to-spaced-repetition', 'Migrate legacy cards to Spaced Repetition', () => this.migrateLegacyCards());
-
-    // Element creation
+    cmd('end-session',        'Grade current reading topic',     () => this.gradeCurrent());
+    // Keep the two highest-frequency capture actions directly hotkeyable.
     cmd('extract-selection',  'Extract selection',               () => this.extractSelection());
-    cmd('extract-clipboard',  'Extract from clipboard (PDF-aware)', () => this.extractClipboard());
     cmd('flashcard-clipboard','Flashcard from clipboard',        () => this.flashcardClipboard());
-    cmd('flashcard-image-name','Flashcard: name this image',     () => this.flashcardImageName());
-    cmd('image-extract-clipboard', 'Image extract from clipboard', () => this.imageExtractClipboard());
-    cmd('occlusion-create',   'Occlusion: create cards from image', () => this.occlusionCreate());
-    cmd('source-new',         'New source',                      () => this.newSource());
-    cmd('import-clipping',    'Import clipping (active note)',   () => this.importClipping());
-
-    // Priority / scheduling
-    cmd('set-priority',       'Set priority',                    () => this.setPriority());
-    cmd('boost',              'Boost priority',                  () => this.boost());
-
-    // Subset / overload
-    cmd('subset-review',      'Subset review',                   () => this.subsetReview());
-    cmd('mercy',              'Mercy (spread overdue)',          () => this.mercy());
-    cmd('postpone-subtree',   'Postpone subtree',                () => this.postponeSubtree());
-
-    // Navigation / reading
-    cmd('open-dashboard',     'Open dashboard',                  () => this.openDashboard());
-    cmd('open-user-guide',    'Open user guide',                 () => this.openUserGuide());
-    cmd('open-parent',        'Open parent',                     () => this.openParent());
-    cmd('open-pdf',           'Open PDF (Toolkit viewer)',       () => this.openPdf());
-    cmd('toggle-read-point',  'Toggle read-point',               () => this.toggleReadPoint());
-    cmd('jump-to-read-point', 'Jump to read-point',              () => this.jumpToReadPoint());
-    cmd('stats',              'Stats',                           () => this.stats());
-    cmd('performance-diagnostics', 'Performance diagnostics',   () => this.performanceDiagnostics());
-
-    // Splits
-    cmd('split-article',      'Split article on H2 headings',    () => this.splitArticle());
-    cmd('split-book',         'Split book into chapters',        () => this.splitBook());
-
-    // Sidebar + checkpoints
-    cmd('open-reading-queue',  'Open reading queue sidebar',  () => this._activateQueueView());
-    cmd('open-knowledge-tree',         'Open knowledge tree',           () => this._activateKnowledgeTree());
-    cmd('open-knowledge-tree-sidebar', 'Open knowledge tree (sidebar)', () => this._activateKnowledgeTreeSidebar());
-    cmd('new-category',                'New category',                  async () => { await this.createCategory(); this._refreshTreeViews(); });
-    cmd('tree-reparent-active',        'Move active element under…',    async () => { await this.reparentActive(); this._refreshTreeViews(); });
-    cmd('checkpoint',     'Add timeline checkpoint', () => this.addCheckpoint());
-    cmd('seed-inline-cards', 'Export inline cards to Spaced Repetition', () => this.seedInlineCards());
+    // Less frequent functionality is grouped to keep the command palette small.
+    cmd('capture-more',       'Capture or create…',               () => this.captureOrCreate());
+    cmd('current-actions',    'Current element actions…',         () => this.currentElementActions());
+    cmd('open-toolkit-view',  'Open Toolkit view…',               () => this.openToolkitView());
+    cmd('advanced-tools',     'Advanced tools…',                  () => this.advancedTools());
     this.app.workspace.onLayoutReady(() => {
       const count = this._legacyCardFiles().length;
-      if (count) new Notice(`Incremental Reading Toolkit: ${count} legacy card${count === 1 ? '' : 's'} found. Run "Migrate legacy cards to Spaced Repetition".`, 10000);
+      if (count) new Notice(`Incremental Reading Toolkit: ${count} legacy card${count === 1 ? '' : 's'} found. Open Advanced tools and choose "Migrate legacy cards to Spaced Repetition".`, 10000);
     });
+  }
+
+  onunload() {
+    if (!this.sessionSaveTimer) return;
+    window.clearTimeout(this.sessionSaveTimer);
+    this.sessionSaveTimer = null;
+    this.saveData(this.settings).catch(error => console.error('[IR] final session persistence failed', error));
+  }
+
+  async _runActionMenu(title, entries) {
+    const picked = await pickFromList(
+      this.app,
+      entries.map(entry => entry.label),
+      entries,
+      title,
+    );
+    if (picked) return picked.run();
+  }
+
+  captureOrCreate() {
+    return this._runActionMenu('Capture or create', [
+      { label: 'New source', run: () => this.newSource() },
+      { label: 'Import clipping (active note)', run: () => this.importClipping() },
+      { label: 'Extract from clipboard (PDF-aware)', run: () => this.extractClipboard() },
+      { label: 'Flashcard: name this image', run: () => this.flashcardImageName() },
+      { label: 'Image extract from clipboard', run: () => this.imageExtractClipboard() },
+      { label: 'Occlusion: create cards from image', run: () => this.occlusionCreate() },
+    ]);
+  }
+
+  currentElementActions() {
+    return this._runActionMenu('Current element actions', [
+      { label: 'Done', run: () => this.markDone() },
+      { label: 'Dismiss', run: () => this.dismiss() },
+      { label: 'Postpone', run: () => this.postpone() },
+      { label: 'Schedule (manual date)', run: () => this.schedule() },
+      { label: 'Set priority', run: () => this.setPriority() },
+      { label: 'Boost priority', run: () => this.boost() },
+      { label: 'Open parent', run: () => this.openParent() },
+      { label: 'Open PDF (Toolkit viewer)', run: () => this.openPdf() },
+      { label: 'Toggle read-point', run: () => this.toggleReadPoint() },
+      { label: 'Jump to read-point', run: () => this.jumpToReadPoint() },
+      { label: 'Add timeline checkpoint', run: () => this.addCheckpoint() },
+    ]);
+  }
+
+  openToolkitView() {
+    return this._runActionMenu('Open Toolkit view', [
+      { label: 'Dashboard', run: () => this.openDashboard() },
+      { label: 'Stats and analytics', run: () => this.openDashboard('stats') },
+      { label: 'Reading queue sidebar', run: () => this._activateQueueView() },
+      { label: 'Knowledge tree', run: () => this._activateKnowledgeTree() },
+      { label: 'Knowledge tree sidebar', run: () => this._activateKnowledgeTreeSidebar() },
+      { label: 'User guide', run: () => this.openUserGuide() },
+    ]);
+  }
+
+  advancedTools() {
+    return this._runActionMenu('Advanced tools', [
+      { label: 'Subset review', run: () => this.subsetReview() },
+      { label: 'Mercy (spread overdue)', run: () => this.mercy() },
+      { label: 'Postpone subtree', run: () => this.postponeSubtree() },
+      { label: 'Split article on H2 headings', run: () => this.splitArticle() },
+      { label: 'Split book into chapters', run: () => this.splitBook() },
+      { label: 'New category', run: async () => { await this.createCategory(); this._refreshTreeViews(); } },
+      { label: 'Move active element under…', run: async () => { await this.reparentActive(); this._refreshTreeViews(); } },
+      { label: 'Export inline cards to Spaced Repetition', run: () => this.seedInlineCards() },
+      { label: 'Migrate legacy cards to Spaced Repetition', run: () => this.migrateLegacyCards() },
+      { label: 'Performance diagnostics', run: () => this.performanceDiagnostics() },
+    ]);
   }
 
   sourcesFolder() { return configuredPath(this.settings, 'sources', SOURCES_FOLDER); }
@@ -2758,19 +2803,22 @@ class IncrementalReadingPlugin extends Plugin {
     }
   }
 
-  async reviewCardsInNote() {
-    const active = this.app.workspace.getActiveFile();
+  async reviewCardsInNote(file = this.app.workspace.getActiveFile()) {
+    const active = file;
     const generation = ++this.spacedRepetitionCloseGeneration;
-    let baseline = '';
+    let baseline = active ? this.cardScheduleSignatures.get(active.path) : null;
     if (active) {
-      try {
-        baseline = spacedRepetitionScheduleSignature(await this.app.vault.cachedRead(active));
-      } catch (error) {
-        console.error('[IR] could not read Spaced Repetition baseline', error);
+      if (baseline == null) {
+        try {
+          baseline = spacedRepetitionScheduleSignature(await this.app.vault.cachedRead(active));
+        } catch (error) {
+          console.error('[IR] could not read Spaced Repetition baseline', error);
+          baseline = '';
+        }
       }
     }
     this.pendingSpacedRepetitionReview = active
-      ? { path: active.path, baseline, expiresAt: Date.now() + 10 * 60 * 1000, generation, verifying: false }
+      ? { path: active.path, baseline, reviewed: false, expiresAt: Date.now() + 10 * 60 * 1000, generation, verifying: false }
       : null;
     if (!this.app.commands.executeCommandById(SPACED_REPETITION_NOTE_COMMAND)) {
       this.pendingSpacedRepetitionReview = null;
@@ -2787,10 +2835,7 @@ class IncrementalReadingPlugin extends Plugin {
       const signature = spacedRepetitionScheduleSignature(content);
       if (signature === pending.baseline) return;
       pending.baseline = signature;
-      this.completedSpacedRepetitionReviews.set(file.path, {
-        completedAt: Date.now(),
-        generation: pending.generation,
-      });
+      pending.reviewed = true;
       this._closeSpacedRepetitionDeckMenuWhenReady(pending.generation);
     } catch (error) {
       console.error('[IR] could not verify Spaced Repetition review', error);
@@ -2811,14 +2856,17 @@ class IncrementalReadingPlugin extends Plugin {
 
       const deckMenu = activeDocument.querySelector('.sr-deck-container:not(.sr-is-hidden)');
       if (deckMenu) {
+        const pending = this.pendingSpacedRepetitionReview?.generation === generation
+          ? this.pendingSpacedRepetitionReview
+          : null;
         for (const leaf of tabLeaves) leaf.detach();
         const closeButton = (modal?.closest('.modal-container') || modal)
           ?.querySelector('.modal-close-button');
         closeButton?.click();
-        if (this.pendingSpacedRepetitionReview?.generation === generation) {
-          this.pendingSpacedRepetitionReview = null;
-        }
+        if (pending?.reviewed) this.consumeSessionItem(pending.path, { background: true });
+        if (pending) this.pendingSpacedRepetitionReview = null;
         this.spacedRepetitionCloseGeneration++;
+        if (pending?.reviewed) new Notice('Card reviewed. Run Next element when you are ready.');
         return;
       }
       if (Date.now() < deadline) window.setTimeout(check, 50);
@@ -2957,8 +3005,10 @@ class IncrementalReadingPlugin extends Plugin {
     const cached = this.cardDueCache.get(file.path);
     if (cached?.key === key) return cached.promise;
 
-    const promise = this.app.vault.cachedRead(file)
-      .then(content => spacedRepetitionCardIsDue(content, today));
+    const promise = this.app.vault.cachedRead(file).then(content => {
+      this.cardScheduleSignatures.set(file.path, spacedRepetitionScheduleSignature(content));
+      return spacedRepetitionCardIsDue(content, today);
+    });
     this.cardDueCache.set(file.path, { key, promise });
     try {
       return await promise;
@@ -3040,7 +3090,13 @@ class IncrementalReadingPlugin extends Plugin {
 
   async persistSessionSnapshot(queue) {
     const paths = queue.map(q => q.tfile?.path).filter(Boolean);
-    this.settings.session = { date: todayDateString(this.settings), paths };
+    const types = Object.fromEntries(queue
+      .filter(item => item.tfile?.path && item.fm?.type)
+      .map(item => [item.tfile.path, item.fm.type]));
+    const readPoints = Object.fromEntries(queue
+      .filter(item => item.tfile?.path && Number(item.fm?.read_point_line) > 0)
+      .map(item => [item.tfile.path, Number(item.fm.read_point_line)]));
+    this.settings.session = { date: todayDateString(this.settings), paths, types, readPoints };
     await this.saveSettings();
     const dash = this.app.vault.getAbstractFileByPath(this.dashboardPath());
     if (!dash) return;
@@ -3064,12 +3120,22 @@ class IncrementalReadingPlugin extends Plugin {
   async consumeSessionItem(path, { background = false } = {}) {
     if (this.settings.session?.date !== todayDateString(this.settings)) return;
     this.settings.session.paths = (this.settings.session.paths || []).filter(value => value !== path);
+    if (this.settings.session.types) delete this.settings.session.types[path];
+    if (this.settings.session.readPoints) delete this.settings.session.readPoints[path];
     // Settings are the authoritative live session. The dashboard snapshot is
     // rebuilt only by Build today's session queue, avoiding a second vault
     // write on the grading path.
-    const persistence = this.saveSettings();
-    if (!background) return persistence;
-    persistence.catch(error => console.error('[IR] background session persistence failed', error));
+    if (!background) return this.saveSettings();
+    this._scheduleSessionSave();
+  }
+
+  _scheduleSessionSave() {
+    if (this.sessionSaveTimer) window.clearTimeout(this.sessionSaveTimer);
+    this.sessionSaveTimer = window.setTimeout(() => {
+      this.sessionSaveTimer = null;
+      this.saveData(this.settings)
+        .catch(error => console.error('[IR] background session persistence failed', error));
+    }, 1500);
   }
 
   async _withDeferredCollectionRenders(callback, { flush = true } = {}) {
@@ -3120,11 +3186,29 @@ class IncrementalReadingPlugin extends Plugin {
 
   async openLearningItem(item) {
     if (!item?.tfile) return;
-    await this.app.workspace.getLeaf(false).openFile(item.tfile);
-    if (item.fm.type === 'card') {
-      this.reviewCardsInNote();
-    } else {
-      this.app.commands.executeCommandById(`${this.manifest.id}:jump-to-read-point`);
+    await this._openLearningFile(item.tfile, item.fm.type, item.fm.read_point_line);
+  }
+
+  async _openLearningFile(file, type, readPointLine = 0) {
+    this.directQueueNavigationDepth++;
+    this.directQueueNavigation = true;
+    try {
+      await this.app.workspace.getLeaf(false).openFile(file);
+      window.setTimeout(() => {
+        if (this.app.workspace.getActiveFile()?.path !== file.path) return;
+        if (type === 'card') this.reviewCardsInNote(file);
+        else if (type === 'source' && Number(readPointLine) > 0) {
+          const editor = getEditorForFile(this.app, file);
+          const line = Math.max(0, Number(readPointLine) - 1);
+          editor?.setCursor({ line, ch: 0 });
+          editor?.scrollIntoView({ from: { line, ch: 0 }, to: { line, ch: 0 } }, true);
+        }
+      }, 60);
+    } finally {
+      window.setTimeout(() => {
+        this.directQueueNavigationDepth = Math.max(0, this.directQueueNavigationDepth - 1);
+        this.directQueueNavigation = this.directQueueNavigationDepth > 0;
+      }, 1000);
     }
   }
 
@@ -3151,19 +3235,10 @@ class IncrementalReadingPlugin extends Plugin {
       .map(path => this.app.vault.getAbstractFileByPath(path))
       .find(file => file instanceof TFile);
     if (!next) { new Notice('✨ Caught up.'); return; }
+    const nextType = session.types?.[next.path] || getFm(this.app, next)?.type;
+    const readPointLine = session.readPoints?.[next.path] || 0;
 
-    // Deliberately navigation-only: no due validation, queue build, state
-    // persistence, read-point jump, card review dispatch, or view refresh.
-    this.directQueueNavigationDepth++;
-    this.directQueueNavigation = true;
-    try {
-      await this.app.workspace.getLeaf(false).openFile(next);
-    } finally {
-      window.setTimeout(() => {
-        this.directQueueNavigationDepth = Math.max(0, this.directQueueNavigationDepth - 1);
-        this.directQueueNavigation = this.directQueueNavigationDepth > 0;
-      }, 0);
-    }
+    return this._openLearningFile(next, nextType, readPointLine);
   }
 
   async randomDue() {
@@ -3179,16 +3254,8 @@ class IncrementalReadingPlugin extends Plugin {
     return this._withDeferredCollectionRenders(async () => {
       const active = this.app.workspace.getActiveFile();
       if (getFm(this.app, active)?.type === 'card') {
-        const completed = active && this.completedSpacedRepetitionReviews.get(active.path);
-        if (!completed || Date.now() - completed.completedAt > 10 * 60 * 1000) {
-          if (active) this.completedSpacedRepetitionReviews.delete(active.path);
-          new Notice('Review and answer this card in Spaced Repetition before grading it.');
-          return false;
-        }
-        this.completedSpacedRepetitionReviews.delete(active.path);
-        if (active) this.consumeSessionItem(active.path, { background: true });
-        new Notice('Card finished. Run Next element when you are ready.');
-        return true;
+        new Notice('Cards finish automatically when Spaced Repetition accepts the review.');
+        return false;
       }
       const graded = await this.endSession();
       if (graded) {
@@ -3207,20 +3274,15 @@ class IncrementalReadingPlugin extends Plugin {
   async endSession() {
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') {
-      new Notice('Open an incremental reading source, extract, or card first.');
+      new Notice('Open an incremental reading source or extract first.');
       return;
     }
     const fm = getFm(this.app, active);
-    if (!fm || (fm.type !== 'source' && fm.type !== 'extract' && fm.type !== 'card')) {
-      new Notice('Active note is not an incremental reading element.');
+    if (!fm || (fm.type !== 'source' && fm.type !== 'extract')) {
+      new Notice('Active note is not a reading topic. Cards are graded automatically in Spaced Repetition.');
       return;
     }
     const today = todayDateString(this.settings);
-
-    if (fm.type === 'card') {
-      this.reviewCardsInNote();
-      return;
-    }
     return await this._gradeTopic(active, fm, today);
   }
 
@@ -4633,21 +4695,25 @@ ${body}
     new Notice(action === 'clear' ? '📍 cleared.' : `📍 ${action} at line ${cursor.line + 1}`);
   }
 
-  async jumpToReadPoint() {
+  async jumpToReadPoint({ silent = false } = {}) {
     const active = this.app.workspace.getActiveFile();
-    if (!active || active.extension !== 'md') { new Notice('Not a markdown source.'); return; }
+    if (!active || active.extension !== 'md') { if (!silent) new Notice('Not a markdown source.'); return; }
     const fm = getFm(this.app, active);
-    if (!fm || fm.type !== 'source') { new Notice('Not an incremental reading source.'); return; }
+    if (!fm || fm.type !== 'source') { if (!silent) new Notice('Not an incremental reading source.'); return; }
     if (fm.total_pages || fm.pdf_path || fm.pdf_vault_path || fm.sioyek_path) {
-      new Notice('PDF — use Open PDF (Toolkit viewer).'); return;
+      if (!silent) new Notice('PDF — use Open PDF (Toolkit viewer).'); return;
     }
     const openEditor = getEditorForFile(this.app, active);
-    const content = openEditor?.getValue?.() ?? await this.app.vault.cachedRead(active);
-    const m = content.match(/(?:📍\s*)?<!--ir-readpoint-->/);
-    if (!m) { new Notice('No 📍 read-point.'); return; }
-    const before = content.slice(0, m.index);
-    const line = (before.match(/\n/g) || []).length;
-    const ch = m.index - (before.lastIndexOf('\n') + 1);
+    let line = Math.max(0, (Number(fm.read_point_line) || 0) - 1);
+    let ch = 0;
+    if (!fm.read_point_line) {
+      const content = openEditor?.getValue?.() ?? await this.app.vault.cachedRead(active);
+      const m = content.match(/(?:📍\s*)?<!--ir-readpoint-->/);
+      if (!m) { if (!silent) new Notice('No 📍 read-point.'); return; }
+      const before = content.slice(0, m.index);
+      line = (before.match(/\n/g) || []).length;
+      ch = m.index - (before.lastIndexOf('\n') + 1);
+    }
     let leaf = this.app.workspace.getLeavesOfType('markdown').find(l => l.view?.file?.path === active.path);
     if (!leaf) {
       leaf = this.app.workspace.getLeaf(false);
@@ -4658,8 +4724,8 @@ ${body}
     if (editor) {
       editor.setCursor({ line, ch });
       editor.scrollIntoView({ from: { line, ch }, to: { line, ch } }, true);
-      new Notice(`Jumped to 📍 (line ${line + 1})`);
-    } else new Notice('Editor not available.');
+      if (!silent) new Notice(`Jumped to 📍 (line ${line + 1})`);
+    } else if (!silent) new Notice('Editor not available.');
   }
 
   // ---- Stats -------------------------------------------------------------
