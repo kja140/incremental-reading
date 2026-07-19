@@ -19,6 +19,13 @@ const config = {
   ]],
   themeConfig: {
     colorMode: {defaultMode: 'dark', respectPrefersColorScheme: true},
+    announcementBar: {
+      id: 'release_1_1_7',
+      content: '⚡ <strong>Version 1.1.7:</strong> much faster note switching and grading—the crash-prone refresh path is gone. <a href="/docs/releases/1.1.7">What’s new →</a>',
+      backgroundColor: '#7aa2f7',
+      textColor: '#1a1b26',
+      isCloseable: true,
+    },
     navbar: {
       title: 'IR Toolkit',
       logo: {alt: 'Incremental Reading Toolkit mark', src: 'img/favicon.svg'},
@@ -26,6 +33,7 @@ const config = {
         {to: '/docs/getting-started/what-is-incremental-reading', label: 'Learn', position: 'left'},
         {to: '/docs/workflows/your-first-session', label: 'Workflows', position: 'left'},
         {to: '/docs/reference/commands', label: 'Reference', position: 'left'},
+        {to: '/docs/releases/1.1.7', label: 'What’s new', position: 'right'},
         {href: 'https://github.com/kja140/incremental-reading', label: 'GitHub', position: 'right'},
       ],
     },

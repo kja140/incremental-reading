@@ -12,6 +12,12 @@ const steps = [
   ['04', 'Return at the right time', 'Priority and A-Factor scheduling decide what comes back into the reading queue.'],
 ];
 
+const releaseHighlights = [
+  ['Open first', 'The next note paints before read-point positioning or card-review follow-up work begins.'],
+  ['Refresh less', 'Inactive dashboards, queue timelines, and tree views stay quiet while you move between notes.'],
+  ['One clear loop', 'Build the queue, open the next element, and grade reading topics. Cards pass directly to Spaced Repetition.'],
+];
+
 export default function Home() {
   return <Layout title="Read less at once. Remember more over time." description="Beginner-friendly documentation for Incremental Reading Toolkit for Obsidian.">
     <main>
@@ -32,6 +38,22 @@ export default function Home() {
           <div className={styles.flowArrow}>→</div>
           <div className={styles.cardStack}><b>Q</b><b>A</b></div>
           <span>source → sessions → extracts → memory</span>
+        </div>
+      </section>
+
+      <section className={styles.release}>
+        <div className={styles.releaseHeading}>
+          <span className={styles.releaseVersion}>NEW · VERSION 1.1.7</span>
+          <Heading as="h2">Greatly faster.<br/>Calm under pressure.</Heading>
+          <p>The work that made note switching and grading freeze—or crash on larger vaults—has been removed from the navigation path.</p>
+          <Link to="/docs/releases/1.1.7">Read the performance update →</Link>
+        </div>
+        <div className={styles.releaseGrid}>
+          {releaseHighlights.map(([title, body], index) => <article key={title}>
+            <span>0{index + 1}</span>
+            <Heading as="h3">{title}</Heading>
+            <p>{body}</p>
+          </article>)}
         </div>
       </section>
 
