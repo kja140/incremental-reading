@@ -7,10 +7,10 @@ title: Your first session
 This walkthrough uses a generic article note—no special content is required.
 
 1. Open an article note.
-2. Run **Import clipping (active note)**. The note becomes a scheduled source.
+2. Open **Capture or create…** and choose **Import clipping (active note)**. The note becomes a scheduled source.
 3. Run **Build today's session queue**, then **Next element**. Read until you reach one useful idea or a natural stopping point.
 4. Select a worthwhile passage and run **Extract selection**.
-5. Return to the source and run **Grade current element**. The Toolkit stores the read point and schedules the next visit. Run **Next element** separately when you are ready to continue.
+5. Return to the source and run **Grade current reading topic**. The Toolkit stores the read point and schedules the next visit. Run **Next element** separately when you are ready to continue.
 6. If the extract contains something worth recalling, copy a concise prompt and answer and run **Flashcard from clipboard**.
 
 That is a complete incremental-reading loop. A session can be five minutes long.
@@ -19,7 +19,7 @@ That is a complete incremental-reading loop. A session can be five minutes long.
 
 | Situation | Action |
 |---|---|
-| Useful, unfinished source | Grade current element, then Next element |
+| Useful, unfinished source | Grade current reading topic, then Next element |
 | Wrong time today | Postpone |
 | No longer valuable | Dismiss |
 | Finished | Done |

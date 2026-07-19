@@ -78,65 +78,30 @@ Card creation writes Spaced Repetition-compatible Markdown. Topic scheduling rem
 
 ## Five-minute workflow
 
-1. **Capture a source.** Open an article note and run **Import clipping (active note)**, or run **New source**.
+1. **Capture a source.** Open **Capture or create…**, then choose **Import clipping (active note)** or **New source**.
 2. **Build the queue.** Run **Build today's session queue** once, then run **Next element**.
 3. **Keep the valuable parts.** Select important text and run **Extract selection**.
-4. **Schedule the return.** Leave the cursor where you stopped, then run **Grade current element**.
-5. **Create recall material.** Run **Flashcard from clipboard**. When **Next element** opens a card note, run **Review cards in current note**, answer it, then run **Grade current element** to finish that queue entry.
+4. **Schedule the return.** Leave the cursor where you stopped, then run **Grade current reading topic**.
+5. **Create recall material.** Run **Flashcard from clipboard**. When **Next element** opens a card note, Spaced Repetition starts automatically and the accepted review finishes that queue entry.
 
 For recommended keybindings and complete note, PDF, card, queue, and date workflows, open the [user guide](docs/USER-GUIDE.md). You can also run **Open user guide** inside Obsidian.
 
 > [!NOTE]
-> Upgrading from a pre-release development build? Run **Migrate legacy cards to Spaced Repetition** once. It preserves card content and source links while replacing legacy scheduling fields.
+> Upgrading from a pre-release development build? Open **Advanced tools…** and run **Migrate legacy cards to Spaced Repetition** once. It preserves card content and source links while replacing legacy scheduling fields.
 
 ## Command reference
-
-### Capture and create
-
-| Command | Purpose |
-|:--|:--|
-| **New source** | Create a new source note. |
-| **Import clipping (active note)** | Convert the active note into a scheduled source. |
-| **Extract selection** | Turn selected source text into a linked extract. |
-| **Extract from clipboard (PDF-aware)** | Create an extract from clipboard text and retain PDF context when available. |
-| **Flashcard from clipboard** | Create a native Spaced Repetition card from clipboard text. |
-| **Flashcard: name this image** | Create an image-identification card. |
-| **Image extract from clipboard** | Save a clipboard image as a linked extract. |
-| **Occlusion: create cards from image** | Draw occlusions and generate image-occlusion cards. |
-| **Export inline cards to Spaced Repetition** | Convert supported inline syntax into native card notes. |
-| **Migrate legacy cards to Spaced Repetition** | Convert card notes created by pre-0.4 builds. |
-
-### Review and schedule
 
 | Command | Purpose |
 |:--|:--|
 | **Build today's session queue** | Explicitly calculate and save today's scheduled queue. |
-| **Next element** | Open the following saved queue path without recalculating or refreshing collection views. |
-| **Random due element** | Calculate due work and choose a random item. |
-| **Grade current element** | Grade and schedule the current topic without navigating; finish an already-reviewed card. |
-| **Review cards** / **Review cards in current note** | Open the corresponding Spaced Repetition review interface. |
-| **Done** / **Dismiss** | Complete or remove a topic from the active queue. |
-| **Postpone** / **Schedule (manual date)** | Move the next review automatically or to a chosen date. |
-| **Subset review** | Review selected items from a source subtree. |
-| **Mercy (spread overdue)** | Distribute an overloaded queue across future days. |
-| **Postpone subtree** | Shift a complete branch together. |
-
-### Organise, navigate, and analyse
-
-| Command | Purpose |
-|:--|:--|
-| **Set priority** / **Boost priority** | Adjust one topic or cascade a boost through its descendants. |
-| **Open dashboard** | Open today’s session, collection health, and analytics. |
-| **Stats** | Open the dashboard at 14-day trends, workload graphs, collection mix, and lifetime totals. |
-| **Open reading queue sidebar** | Show today’s session and supplementary queue groups. |
-| **Open knowledge tree** / **Open knowledge tree (sidebar)** | Browse the collection hierarchy in a main view or sidebar. |
-| **New category** / **Move active element under…** | Create and reorganise tree branches. |
-| **Open parent** | Navigate from an extract or card to its parent. |
-| **Open PDF (Toolkit viewer)** | Open the active source in the integrated PDF reader. |
-| **Toggle read-point** / **Jump to read-point** | Save, move, clear, or revisit a Markdown read point. |
-| **Add timeline checkpoint** | Save a dated note at the current reading position. |
-| **Split article on H2 headings** | Divide a long article into linked child topics. |
-| **Split book into chapters** | Create scheduled chapter topics from page ranges. |
+| **Next element** | Open the following saved queue path without recalculating collection views; automatically start SR when it is a card. |
+| **Grade current reading topic** | Grade and schedule the current source or extract without navigating. Cards finish automatically in SR. |
+| **Extract selection** | Turn selected source text into a linked extract. |
+| **Flashcard from clipboard** | Create a native Spaced Repetition card from clipboard text. |
+| **Capture or create…** | New/imported sources, PDF-aware extracts, image cards, image extracts, and occlusions. |
+| **Current element actions…** | Done, dismiss, postpone, schedule, priority, parent/PDF navigation, read points, and checkpoints. |
+| **Open Toolkit view…** | Dashboard, analytics, queue, knowledge tree, or user guide. |
+| **Advanced tools…** | Subset/overload tools, splits, tree editing, migration, inline-card export, and diagnostics. |
 
 ## Settings
 

@@ -12,8 +12,9 @@ test('manifest Help action opens the repository README', () => {
   assert.equal(manifest.helpUrl, 'https://github.com/kja140/incremental-reading#readme');
 });
 
-test('in-app guide is registered and exposed in settings', () => {
-  assert.match(source, /cmd\('open-user-guide',\s+'Open user guide'/);
+test('in-app guide is exposed through the grouped view command and settings', () => {
+  assert.match(source, /cmd\('open-toolkit-view',\s+'Open Toolkit view…'/);
+  assert.match(source, /label: 'User guide', run: \(\) => this\.openUserGuide\(\)/);
   assert.match(source, /setButtonText\('Open user guide'\)/);
   assert.match(source, /class UserGuideModal extends Modal/);
 });

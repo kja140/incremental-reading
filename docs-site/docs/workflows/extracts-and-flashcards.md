@@ -8,6 +8,8 @@ An **extract** is material you may want to read or refine again. A **flashcard**
 
 ## Capture options
 
+**Extract selection** and **Flashcard from clipboard** remain direct commands. The other capture actions are grouped under **Capture or create…**; inline export is under **Advanced tools…**.
+
 - **Extract selection** creates an extract from selected Markdown text.
 - **Extract from clipboard (PDF-aware)** creates a linked extract from copied content.
 - **Flashcard from clipboard** creates a Spaced Repetition card note.

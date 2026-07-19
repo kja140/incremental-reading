@@ -28,13 +28,14 @@ Keep the default folders initially. Add convenient hotkeys for:
 
 - **Next element**
 - **Build today's session queue**
-- **Grade current element**
+- **Grade current reading topic**
 - **Extract selection**
 - **Flashcard from clipboard**
-- **Open reading queue sidebar**
+- **Current element actions…**
+- **Open Toolkit view…**
 
 Configure the flashcard algorithm and card-review behavior in Spaced Repetition. Configure source/extract scheduling in the Toolkit.
 
 :::caution Upgrading an early development build
-Run **Migrate legacy cards to Spaced Repetition** once. It preserves the card content and source links, adds the configured deck tag, and removes obsolete card-scheduling fields.
+Open **Advanced tools…** and run **Migrate legacy cards to Spaced Repetition** once. It preserves the card content and source links, adds the configured deck tag, and removes obsolete card-scheduling fields.
 :::

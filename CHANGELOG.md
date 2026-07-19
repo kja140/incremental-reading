@@ -1,5 +1,23 @@
 # Incremental Reading Toolkit changelog
 
+## 1.1.7 — 2026-07-19
+
+### Changed
+- Reduced the command palette from 38 Toolkit entries to 9. The daily loop is **Build today's session
+  queue**, **Next element**, and **Grade current reading topic**; less frequent operations are grouped
+  under **Capture or create…**, **Current element actions…**, **Open Toolkit view…**, and
+  **Advanced tools…**. Global and per-note card review remain owned by Spaced Repetition.
+- **Next element** now opens the saved note first and automatically starts per-note Spaced Repetition
+  review for cards. A completed SR review removes the card note from the session automatically.
+
+### Fixed
+- Note switching no longer performs synchronous queue-timeline rendering or forced DOM visibility
+  checks for stale dashboard, queue, and knowledge-tree views.
+- Follow-up read-point/card-review actions run after the note paints, while Toolkit view refreshes remain
+  suppressed through Spaced Repetition's leaf changes.
+- Session consumption is persisted with a short debounce, preventing plugin-data writes from competing
+  with grading and the next note open.
+
 ## 1.1.6 — 2026-07-13
 
 ### Changed
