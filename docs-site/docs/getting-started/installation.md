@@ -5,6 +5,12 @@ sidebar_position: 3
 
 # Installation and setup
 
+:::tip Update to version 1.1.7
+Version 1.1.7 greatly speeds up switching notes and grading. It removes dashboard and queue refresh work
+from navigation—the source of reported freezes and crashes—and simplifies the daily command flow.
+[Read the performance update](../releases/version-1-1-7.md).
+:::
+
 ## Community Plugins
 
 1. In Obsidian, open **Settings → Community plugins**.

@@ -1,6 +1,10 @@
 module.exports = {
   tutorialSidebar: [
     {
+      type: 'category', label: 'Latest release', collapsed: false,
+      items: ['releases/version-1-1-7'],
+    },
+    {
       type: 'category', label: 'Getting started', collapsed: false,
       items: ['getting-started/what-is-incremental-reading', 'getting-started/how-the-toolkit-fits', 'getting-started/installation'],
     },
